@@ -342,6 +342,9 @@ class BackendRunner:
             "visual_reliability",
             "candidate_reliability_peak",
             "candidate_reliability_mean",
+            "candidate_modulation",
+            "candidate_modulation_factor_min",
+            "candidate_modulation_factor_max",
             "vdrm_alpha",
             "vdrm_residual_clip_rate",
             "vdrm_raw_delta_relative_norm",
@@ -562,6 +565,15 @@ def build_pair_row(
         ),
         "candidate_reliability_mean": float(
             vdrm_output.get("candidate_reliability_mean", math.nan)
+        ),
+        "candidate_modulation": float(
+            vdrm_output.get("candidate_modulation", math.nan)
+        ),
+        "candidate_modulation_factor_min": float(
+            vdrm_output.get("candidate_modulation_factor_min", math.nan)
+        ),
+        "candidate_modulation_factor_max": float(
+            vdrm_output.get("candidate_modulation_factor_max", math.nan)
         ),
         "baseline_response_reliability": baseline_response[
             "response_reliability"

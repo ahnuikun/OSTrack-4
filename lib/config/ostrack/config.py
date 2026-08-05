@@ -43,7 +43,9 @@ cfg.MODEL.VDRM.INITIAL_MATCH_BIAS = -2.5
 cfg.MODEL.VDRM.RESIDUAL_MAX_RATIO = 0.0
 # V7 adds ``candidate_consensus``. V8 adds ``part_aligned``, which routes
 # every template part at the same search tokens used to build its residual.
-# ``token_match`` keeps the exact V1-V6 forward path and state-dict schema.
+# V10 adds ``part_aligned_guidance``: V8 remains the guaranteed residual
+# path, while an isolated candidate branch can only apply a bounded,
+# mean-centered correction. ``token_match`` keeps the exact V1-V6 path.
 cfg.MODEL.VDRM.SPATIAL_GATE_MODE = "token_match"
 cfg.MODEL.VDRM.CANDIDATE_LOCAL_RADIUS = 1
 cfg.MODEL.VDRM.CANDIDATE_CONSENSUS_PARTS = 2
@@ -51,6 +53,9 @@ cfg.MODEL.VDRM.CANDIDATE_INITIAL_MATCH_SCALE = 5.0
 cfg.MODEL.VDRM.CANDIDATE_INITIAL_MATCH_BIAS = -2.5
 cfg.MODEL.VDRM.PART_ROUTE_INITIAL_MATCH_SCALE = 5.0
 cfg.MODEL.VDRM.PART_ROUTE_INITIAL_MATCH_BIAS = -2.5
+# V10 bounds the candidate correction to preserve at least half of every V8
+# part-aligned residual token. It is unused by all earlier modes.
+cfg.MODEL.VDRM.CANDIDATE_MODULATION_MAX = 0.5
 # 0 preserves the direct LayerScale used by V1-V7. V8 uses a positive bound
 # to prevent a shrinking spatial gate from being offset by alpha growth.
 cfg.MODEL.VDRM.ALPHA_MAX = 0.0

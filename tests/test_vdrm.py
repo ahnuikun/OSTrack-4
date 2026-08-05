@@ -338,6 +338,158 @@ class VDRMTest(unittest.TestCase):
             torch.isfinite(module.candidate_log_match_scale.grad).all()
         )
 
+    def test_part_aligned_guidance_starts_as_exact_v8_and_is_bounded(self):
+        torch.manual_seed(41)
+        guided = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_guidance",
+            candidate_local_radius=1,
+            candidate_consensus_parts=3,
+            candidate_modulation_max=0.5,
+            alpha_max=1.5,
+        )
+        reference = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        for name in (
+            "log_match_scale",
+            "match_bias",
+            "part_route_log_match_scale",
+            "part_route_match_bias",
+            "alpha",
+        ):
+            getattr(reference, name).data.copy_(getattr(guided, name).data)
+        guided.alpha.data.fill_(-0.5)
+        reference.alpha.data.fill_(-0.5)
+        tokens = torch.randn(2, 64 + 25, 16)
+        template_bbox = torch.tensor(
+            [[0.25, 0.25, 0.50, 0.50]] * 2
+        )
+        global_index = torch.arange(25).unsqueeze(0).repeat(2, 1)
+
+        guided_output, diagnostics = guided(
+            tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+        reference_output, _ = reference(
+            tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+
+        torch.testing.assert_close(guided_output, reference_output)
+        self.assertEqual(diagnostics["candidate_modulation"].item(), 0.0)
+        torch.testing.assert_close(
+            diagnostics["candidate_modulation_factor_min"],
+            torch.ones(2),
+        )
+        torch.testing.assert_close(
+            diagnostics["candidate_modulation_factor_max"],
+            torch.ones(2),
+        )
+        self.assertEqual(
+            set(guided.state_dict()),
+            {
+                "log_match_scale",
+                "match_bias",
+                "candidate_log_match_scale",
+                "candidate_match_bias",
+                "part_route_log_match_scale",
+                "part_route_match_bias",
+                "candidate_modulation",
+                "alpha",
+            },
+        )
+
+        for raw_value in (-100.0, 100.0):
+            guided.candidate_modulation.data.fill_(raw_value)
+            _, bounded = guided(
+                tokens,
+                template_length=64,
+                template_bbox=template_bbox,
+                search_global_index=global_index,
+                search_grid_size=5,
+            )
+            self.assertGreaterEqual(
+                bounded["candidate_modulation_factor_min"].min().item(),
+                0.5,
+            )
+            self.assertLessEqual(
+                bounded["candidate_modulation_factor_max"].max().item(),
+                1.5,
+            )
+
+        with self.assertRaisesRegex(ValueError, r"in \(0, 0\.5\]"):
+            VisibilityDrivenRepresentationModule(
+                num_parts=4,
+                spatial_gate_mode="part_aligned_guidance",
+                candidate_modulation_max=0.75,
+            )
+
+    def test_part_aligned_guidance_isolates_candidate_and_route_gradients(self):
+        torch.manual_seed(43)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_guidance",
+            candidate_local_radius=1,
+            candidate_consensus_parts=3,
+            candidate_modulation_max=0.5,
+            alpha_max=1.5,
+        )
+        module.alpha.data.fill_(-0.5)
+        module.candidate_modulation.data.fill_(0.1)
+        global_index = torch.arange(25).unsqueeze(0)
+        template_bbox = torch.tensor([[0.25, 0.25, 0.50, 0.50]])
+        tokens = torch.randn(1, 64 + 25, 16, requires_grad=True)
+
+        output, _ = module(
+            tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+        output[:, 64:].square().mean().backward()
+
+        self.assertIsNone(module.candidate_log_match_scale.grad)
+        self.assertIsNone(module.candidate_match_bias.grad)
+        self.assertIsNotNone(module.candidate_modulation.grad)
+        self.assertIsNotNone(module.part_route_log_match_scale.grad)
+        self.assertIsNotNone(module.part_route_match_bias.grad)
+
+        module.zero_grad(set_to_none=True)
+        _, diagnostics = module(
+            torch.randn(1, 64 + 25, 16),
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+        gaussian_map = torch.zeros(1, 5, 5)
+        gaussian_map[:, 2, 2] = 1.0
+        candidate_loss = compute_vdrm_candidate_focal_loss(
+            diagnostics["candidate_identity_logits"],
+            diagnostics["search_global_index"],
+            gaussian_map,
+            sample_valid=diagnostics["candidate_consensus_valid"],
+        )
+        candidate_loss.backward()
+
+        self.assertIsNotNone(module.candidate_log_match_scale.grad)
+        self.assertIsNotNone(module.candidate_match_bias.grad)
+        self.assertIsNone(module.candidate_modulation.grad)
+        self.assertIsNone(module.part_route_log_match_scale.grad)
+        self.assertIsNone(module.part_route_match_bias.grad)
+        self.assertIsNone(module.log_match_scale.grad)
+        self.assertIsNone(module.match_bias.grad)
+
     def test_v9_actor_trains_candidate_and_part_route_objectives(self):
         vdrm_cfg = SimpleNamespace(
             ENABLED=True,

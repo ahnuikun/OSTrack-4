@@ -19,6 +19,10 @@ The first implementation intentionally keeps the design small:
   residual where several routed parts support the same local candidate. The
   candidate gate is detached from the tracking loss, so only its explicit
   target supervision can calibrate it.
+* VDRM-v10 preserves the complete V8 residual and treats candidate consensus
+  as isolated guidance. Candidate supervision cannot alter part routing, and
+  a zero-initialized bounded scalar can only apply a mean-centered correction
+  that retains a hard residual floor at every token.
 
 The original ``topk`` reliability is retained for VDRM-v1 checkpoint
 compatibility. VDRM-v2 uses the margin between a part's best match and its
@@ -56,6 +60,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         candidate_initial_match_bias: float = -2.5,
         part_route_initial_match_scale: float = 5.0,
         part_route_initial_match_bias: float = -2.5,
+        candidate_modulation_max: float = 0.5,
         alpha_max: float = 0.0,
         eps: float = 1e-6,
     ) -> None:
@@ -84,11 +89,12 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "candidate_consensus",
             "part_aligned",
             "part_aligned_consensus",
+            "part_aligned_guidance",
         ):
             raise ValueError(
                 "spatial_gate_mode must be 'token_match', "
                 "'candidate_consensus', 'part_aligned', or "
-                "'part_aligned_consensus', "
+                "'part_aligned_consensus', or 'part_aligned_guidance', "
                 f"got {spatial_gate_mode!r}"
             )
         if candidate_local_radius < 0:
@@ -105,6 +111,19 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             raise ValueError(
                 f"alpha_max must be non-negative, got {alpha_max}"
             )
+        if candidate_modulation_max < 0.0:
+            raise ValueError(
+                "candidate_modulation_max must be non-negative, got "
+                f"{candidate_modulation_max}"
+            )
+        if (
+            spatial_gate_mode == "part_aligned_guidance"
+            and not 0.0 < candidate_modulation_max <= 0.5
+        ):
+            raise ValueError(
+                "part_aligned_guidance requires "
+                "candidate_modulation_max in (0, 0.5]"
+            )
 
         self.num_parts = num_parts
         self.part_grid = part_grid
@@ -115,6 +134,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         self.spatial_gate_mode = spatial_gate_mode
         self.candidate_local_radius = int(candidate_local_radius)
         self.candidate_consensus_parts = int(candidate_consensus_parts)
+        self.candidate_modulation_max = float(candidate_modulation_max)
         self.alpha_max = float(alpha_max)
         self.eps = eps
 
@@ -133,6 +153,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if self.spatial_gate_mode in (
             "candidate_consensus",
             "part_aligned_consensus",
+            "part_aligned_guidance",
         ):
             initial_candidate_scale = torch.tensor(
                 float(candidate_initial_match_scale)
@@ -152,6 +173,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if self.spatial_gate_mode in (
             "part_aligned",
             "part_aligned_consensus",
+            "part_aligned_guidance",
         ):
             initial_part_route_scale = torch.tensor(
                 float(part_route_initial_match_scale)
@@ -166,6 +188,14 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             self.register_parameter("part_route_log_match_scale", None)
             self.register_parameter("part_route_match_bias", None)
 
+        # V10 starts as the exact V8 residual path. Tracking loss may learn a
+        # small candidate correction, but the bounded scalar and centered gate
+        # cannot erase the base residual or change its training gradients.
+        if self.spatial_gate_mode == "part_aligned_guidance":
+            self.candidate_modulation = nn.Parameter(torch.zeros(()))
+        else:
+            self.register_parameter("candidate_modulation", None)
+
         # Zero initialization preserves the original OSTrack forward path.
         self.alpha = nn.Parameter(torch.zeros(()))
 
@@ -174,6 +204,17 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if self.alpha_max <= 0.0:
             return self.alpha
         return self.alpha_max * torch.tanh(self.alpha / self.alpha_max)
+
+    def _effective_candidate_modulation(self) -> torch.Tensor:
+        """Return V10's bounded residual-preserving candidate correction."""
+        if self.candidate_modulation is None:
+            raise RuntimeError(
+                "candidate modulation is only defined for "
+                "part_aligned_guidance"
+            )
+        return self.candidate_modulation_max * torch.tanh(
+            self.candidate_modulation / self.candidate_modulation_max
+        )
 
     def _part_aligned_statistics(
         self,
@@ -531,6 +572,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if self.spatial_gate_mode in (
             "part_aligned",
             "part_aligned_consensus",
+            "part_aligned_guidance",
         ):
             part_route_logits, part_route_gate, residual = (
                 self._part_aligned_statistics(
@@ -560,6 +602,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if self.spatial_gate_mode in (
             "candidate_consensus",
             "part_aligned_consensus",
+            "part_aligned_guidance",
         ):
             if search_global_index is None or search_grid_size is None:
                 raise ValueError(
@@ -567,12 +610,23 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                     "and search_grid_size"
                 )
             candidate_evidence = similarity
-            if self.spatial_gate_mode == "part_aligned_consensus":
+            candidate_reliability = part_reliability
+            if self.spatial_gate_mode in (
+                "part_aligned_consensus",
+                "part_aligned_guidance",
+            ):
                 if part_route_gate is None:
                     raise RuntimeError(
-                        "part-aligned consensus requires part-route evidence"
+                        "part-aligned candidate guidance requires "
+                        "part-route evidence"
                     )
                 candidate_evidence = part_route_gate
+            if self.spatial_gate_mode == "part_aligned_guidance":
+                # Candidate focal supervision calibrates only its own branch.
+                # It must not repeat V9's reduction of positive part-route
+                # probabilities or change backbone features.
+                candidate_evidence = candidate_evidence.detach()
+                candidate_reliability = candidate_reliability.detach()
             (
                 candidate_logits,
                 candidate_gate,
@@ -580,20 +634,18 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 consensus_valid,
             ) = self._candidate_consensus_statistics(
                 candidate_evidence,
-                part_reliability,
+                candidate_reliability,
                 part_valid,
                 search_global_index,
                 int(search_grid_size),
             )
-            residual_candidate_gate = candidate_gate
             if self.spatial_gate_mode == "part_aligned_consensus":
                 # The tracking objective must not learn to close the spatial
                 # gate and compensate with LayerScale. Candidate focal loss
                 # still trains the gate (and its part-route evidence) through
                 # candidate_logits, while the bounded alpha learns only the
                 # magnitude of an accepted residual.
-                residual_candidate_gate = residual_candidate_gate.detach()
-            residual = residual * residual_candidate_gate.unsqueeze(-1)
+                residual = residual * candidate_gate.detach().unsqueeze(-1)
             candidate_diagnostics = {
                 "candidate_identity_logits": candidate_logits,
                 "candidate_reliability_map": candidate_map,
@@ -602,6 +654,39 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 "candidate_reliability_mean": candidate_gate.mean(dim=1),
                 "search_global_index": search_global_index,
             }
+            if self.spatial_gate_mode == "part_aligned_guidance":
+                # Centering prevents a sparse gate from globally shrinking the
+                # residual. Detaching both inputs leaves the V8 base route's
+                # tracking gradient unchanged; only this scalar learns from
+                # the correction. With max=0.5 every token retains a forward
+                # factor in [0.5, 1.5], independent of gate calibration.
+                centered_candidate_gate = candidate_gate.detach()
+                centered_candidate_gate = centered_candidate_gate - (
+                    centered_candidate_gate.mean(dim=1, keepdim=True)
+                )
+                candidate_modulation = (
+                    self._effective_candidate_modulation()
+                )
+                modulation_factor = 1.0 + (
+                    candidate_modulation * centered_candidate_gate
+                )
+                candidate_correction = (
+                    residual.detach()
+                    * centered_candidate_gate.unsqueeze(-1)
+                )
+                residual = residual + (
+                    candidate_modulation * candidate_correction
+                )
+                candidate_diagnostics.update({
+                    "candidate_modulation": candidate_modulation,
+                    "candidate_modulation_raw": self.candidate_modulation,
+                    "candidate_modulation_factor_min": (
+                        modulation_factor.min(dim=1).values
+                    ),
+                    "candidate_modulation_factor_max": (
+                        modulation_factor.max(dim=1).values
+                    ),
+                })
         effective_alpha = self._effective_alpha()
         raw_delta = effective_alpha * residual
 
@@ -642,9 +727,10 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if self.spatial_gate_mode in (
             "part_aligned",
             "part_aligned_consensus",
+            "part_aligned_guidance",
         ):
             # Measure before LayerScale so zero initialization cannot hide a
-            # collapsed routing map during early V8/V9 training.
+            # collapsed routing map during early V8/V9/V10 training.
             residual_energy = residual.square().sum(dim=-1)
             residual_energy_sum = residual_energy.sum(dim=1).clamp_min(
                 self.eps

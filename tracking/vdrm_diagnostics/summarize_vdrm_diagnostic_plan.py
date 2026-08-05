@@ -241,6 +241,24 @@ def build_report(
             "candidate_spearman_with_vdrm_iou": candidate.get(
                 "spearman_with_vdrm_iou"
             ),
+            "candidate_modulation_mean": _metric(
+                summary,
+                "candidate_guidance",
+                "candidate_modulation",
+                "mean",
+            ),
+            "candidate_modulation_factor_min_mean": _metric(
+                summary,
+                "candidate_guidance",
+                "candidate_modulation_factor_min",
+                "mean",
+            ),
+            "candidate_modulation_factor_max_mean": _metric(
+                summary,
+                "candidate_guidance",
+                "candidate_modulation_factor_max",
+                "mean",
+            ),
             "residual_relative_norm_correct": _metric(
                 summary,
                 "residual",

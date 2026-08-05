@@ -26,6 +26,11 @@ RESIDUAL_METRICS = (
     "vdrm_raw_delta_relative_norm",
     "vdrm_delta_relative_norm",
 )
+GUIDANCE_METRICS = (
+    "candidate_modulation",
+    "candidate_modulation_factor_min",
+    "candidate_modulation_factor_max",
+)
 
 
 def valid_box(box: Sequence[float]) -> bool:
@@ -399,6 +404,10 @@ def summarize_pair_rows(
         metric: continuous_metric_summary(valid_rows, metric)
         for metric in RESIDUAL_METRICS
     }
+    candidate_guidance = {
+        metric: continuous_metric_summary(valid_rows, metric)
+        for metric in GUIDANCE_METRICS
+    }
     summary = {
         "frame_count": len(rows),
         "valid_gt_frames": len(valid_rows),
@@ -461,7 +470,10 @@ def summarize_pair_rows(
             for metric in metric_names
         },
         "residual": residual,
+        "candidate_guidance": candidate_guidance,
     }
     for metric, metric_summary in residual.items():
+        summary[f"mean_{metric}"] = metric_summary["mean"]
+    for metric, metric_summary in candidate_guidance.items():
         summary[f"mean_{metric}"] = metric_summary["mean"]
     return summary

@@ -46,6 +46,7 @@ class VisionTransformerCE(VisionTransformer):
                   vdrm_candidate_initial_match_bias=-2.5,
                   vdrm_part_route_initial_match_scale=5.0,
                   vdrm_part_route_initial_match_bias=-2.5,
+                  vdrm_candidate_modulation_max=0.5,
                   vdrm_alpha_max=0.0):
         """
         Args:
@@ -140,6 +141,7 @@ class VisionTransformerCE(VisionTransformer):
                 part_route_initial_match_bias=(
                     vdrm_part_route_initial_match_bias
                 ),
+                candidate_modulation_max=vdrm_candidate_modulation_max,
                 alpha_max=vdrm_alpha_max,
             )
         else:

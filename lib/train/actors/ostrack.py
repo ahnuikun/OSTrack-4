@@ -789,6 +789,7 @@ class OSTrackActor(BaseActor):
             if spatial_gate_mode in (
                 'candidate_consensus',
                 'part_aligned_consensus',
+                'part_aligned_guidance',
             ):
                 required_candidate_outputs = {
                     'candidate_identity_logits', 'search_global_index'
@@ -810,6 +811,7 @@ class OSTrackActor(BaseActor):
             if spatial_gate_mode in (
                 'part_aligned',
                 'part_aligned_consensus',
+                'part_aligned_guidance',
             ):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
@@ -889,6 +891,22 @@ class OSTrackActor(BaseActor):
                 if 'candidate_reliability_mean' in pred_dict:
                     status["VDRM/candidate_reliability_mean"] = (
                         pred_dict['candidate_reliability_mean']
+                        .detach()
+                        .mean()
+                        .item()
+                    )
+                if 'candidate_modulation' in pred_dict:
+                    status["VDRM/candidate_modulation"] = (
+                        pred_dict['candidate_modulation'].detach().item()
+                    )
+                    status["VDRM/candidate_modulation_factor_min"] = (
+                        pred_dict['candidate_modulation_factor_min']
+                        .detach()
+                        .mean()
+                        .item()
+                    )
+                    status["VDRM/candidate_modulation_factor_max"] = (
+                        pred_dict['candidate_modulation_factor_max']
                         .detach()
                         .mean()
                         .item()
