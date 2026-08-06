@@ -345,6 +345,9 @@ class BackendRunner:
             "candidate_modulation",
             "candidate_modulation_factor_min",
             "candidate_modulation_factor_max",
+            "part_route_residual_retention_mean",
+            "part_route_residual_retention_min",
+            "part_route_residual_retention_max",
             "vdrm_alpha",
             "vdrm_residual_clip_rate",
             "vdrm_raw_delta_relative_norm",
@@ -574,6 +577,21 @@ def build_pair_row(
         ),
         "candidate_modulation_factor_max": float(
             vdrm_output.get("candidate_modulation_factor_max", math.nan)
+        ),
+        "part_route_residual_retention_mean": float(
+            vdrm_output.get(
+                "part_route_residual_retention_mean", math.nan
+            )
+        ),
+        "part_route_residual_retention_min": float(
+            vdrm_output.get(
+                "part_route_residual_retention_min", math.nan
+            )
+        ),
+        "part_route_residual_retention_max": float(
+            vdrm_output.get(
+                "part_route_residual_retention_max", math.nan
+            )
         ),
         "baseline_response_reliability": baseline_response[
             "response_reliability"

@@ -80,6 +80,23 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         self.assertEqual(v10.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.1)
         self.assertEqual(v10.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
 
+    def test_v11_background_suppressed_route_config_is_registered(self):
+        _, _, v11 = load_config(
+            "vitb_256_mae_ce_vdrm_v11_bspar_hncp_32x4_ep300"
+        )
+
+        self.assertTrue(v11.MODEL.VDRM.ENABLED)
+        self.assertEqual(
+            v11.MODEL.VDRM.SPATIAL_GATE_MODE,
+            "part_aligned_sharpened",
+        )
+        self.assertEqual(
+            v11.MODEL.VDRM.PART_ROUTE_RESIDUAL_FLOOR, 0.25
+        )
+        self.assertEqual(v11.MODEL.VDRM.ALPHA_MAX, 1.5)
+        self.assertEqual(v11.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
+        self.assertEqual(v11.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
+
     def test_map_box_back_uses_the_shared_anchor(self):
         mapped = map_box_back_from_anchor(
             predicted_box=[50.0, 50.0, 20.0, 10.0],
@@ -175,6 +192,9 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
                     "candidate_modulation": 0.2,
                     "candidate_modulation_factor_min": 0.9,
                     "candidate_modulation_factor_max": 1.1,
+                    "part_route_residual_retention_mean": 0.6,
+                    "part_route_residual_retention_min": 0.3,
+                    "part_route_residual_retention_max": 0.9,
                     "visual_reliability": reliability,
                     "vdrm_response_reliability": reliability,
                     "combined_reliability": reliability,
@@ -220,6 +240,18 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         )
         self.assertEqual(
             summary["mean_candidate_modulation_factor_max"], 1.1
+        )
+        self.assertEqual(
+            summary["route_safeguard"][
+                "part_route_residual_retention_mean"
+            ]["mean"],
+            0.6,
+        )
+        self.assertEqual(
+            summary["mean_part_route_residual_retention_min"], 0.3
+        )
+        self.assertEqual(
+            summary["mean_part_route_residual_retention_max"], 0.9
         )
 
 

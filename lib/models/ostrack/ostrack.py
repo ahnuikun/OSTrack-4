@@ -162,6 +162,7 @@ def build_ostrack(cfg, training=True):
                                             vdrm_candidate_initial_match_bias=vdrm_cfg.CANDIDATE_INITIAL_MATCH_BIAS if vdrm_enabled else -2.5,
                                             vdrm_part_route_initial_match_scale=vdrm_cfg.PART_ROUTE_INITIAL_MATCH_SCALE if vdrm_enabled else 5.0,
                                             vdrm_part_route_initial_match_bias=vdrm_cfg.PART_ROUTE_INITIAL_MATCH_BIAS if vdrm_enabled else -2.5,
+                                            vdrm_part_route_residual_floor=vdrm_cfg.PART_ROUTE_RESIDUAL_FLOOR if vdrm_enabled else 1.0,
                                             vdrm_candidate_modulation_max=vdrm_cfg.CANDIDATE_MODULATION_MAX if vdrm_enabled else 0.5,
                                             vdrm_alpha_max=vdrm_cfg.ALPHA_MAX if vdrm_enabled else 0.0,
                                            )
@@ -190,6 +191,7 @@ def build_ostrack(cfg, training=True):
                                             vdrm_candidate_initial_match_bias=vdrm_cfg.CANDIDATE_INITIAL_MATCH_BIAS if vdrm_enabled else -2.5,
                                             vdrm_part_route_initial_match_scale=vdrm_cfg.PART_ROUTE_INITIAL_MATCH_SCALE if vdrm_enabled else 5.0,
                                             vdrm_part_route_initial_match_bias=vdrm_cfg.PART_ROUTE_INITIAL_MATCH_BIAS if vdrm_enabled else -2.5,
+                                            vdrm_part_route_residual_floor=vdrm_cfg.PART_ROUTE_RESIDUAL_FLOOR if vdrm_enabled else 1.0,
                                             vdrm_candidate_modulation_max=vdrm_cfg.CANDIDATE_MODULATION_MAX if vdrm_enabled else 0.5,
                                             vdrm_alpha_max=vdrm_cfg.ALPHA_MAX if vdrm_enabled else 0.0,
                                             )

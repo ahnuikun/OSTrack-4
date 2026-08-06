@@ -23,6 +23,11 @@ The first implementation intentionally keeps the design small:
   as isolated guidance. Candidate supervision cannot alter part routing, and
   a zero-initialized bounded scalar can only apply a mean-centered correction
   that retains a hard residual floor at every token.
+* VDRM-v11 keeps V8's supervised part routes and checkpoint schema, but
+  suppresses the accumulated background leakage before residual injection.
+  A deterministic confidence factor preserves most positive-route evidence,
+  retains a configurable fraction of every V8 contribution, and introduces
+  no candidate gate or additional learned scalar.
 
 The original ``topk`` reliability is retained for VDRM-v1 checkpoint
 compatibility. VDRM-v2 uses the margin between a part's best match and its
@@ -60,6 +65,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         candidate_initial_match_bias: float = -2.5,
         part_route_initial_match_scale: float = 5.0,
         part_route_initial_match_bias: float = -2.5,
+        part_route_residual_floor: float = 1.0,
         candidate_modulation_max: float = 0.5,
         alpha_max: float = 0.0,
         eps: float = 1e-6,
@@ -90,11 +96,13 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned",
             "part_aligned_consensus",
             "part_aligned_guidance",
+            "part_aligned_sharpened",
         ):
             raise ValueError(
                 "spatial_gate_mode must be 'token_match', "
                 "'candidate_consensus', 'part_aligned', or "
-                "'part_aligned_consensus', or 'part_aligned_guidance', "
+                "'part_aligned_consensus', 'part_aligned_guidance', or "
+                "'part_aligned_sharpened', "
                 f"got {spatial_gate_mode!r}"
             )
         if candidate_local_radius < 0:
@@ -110,6 +118,11 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if alpha_max < 0.0:
             raise ValueError(
                 f"alpha_max must be non-negative, got {alpha_max}"
+            )
+        if not 0.0 < part_route_residual_floor <= 1.0:
+            raise ValueError(
+                "part_route_residual_floor must be in (0, 1], got "
+                f"{part_route_residual_floor}"
             )
         if candidate_modulation_max < 0.0:
             raise ValueError(
@@ -134,6 +147,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         self.spatial_gate_mode = spatial_gate_mode
         self.candidate_local_radius = int(candidate_local_radius)
         self.candidate_consensus_parts = int(candidate_consensus_parts)
+        self.part_route_residual_floor = float(part_route_residual_floor)
         self.candidate_modulation_max = float(candidate_modulation_max)
         self.alpha_max = float(alpha_max)
         self.eps = eps
@@ -174,6 +188,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned",
             "part_aligned_consensus",
             "part_aligned_guidance",
+            "part_aligned_sharpened",
         ):
             initial_part_route_scale = torch.tensor(
                 float(part_route_initial_match_scale)
@@ -222,7 +237,9 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         prototypes: torch.Tensor,
         part_reliability: torch.Tensor,
         part_valid: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    ]:
         """Route each part and build its residual from the same evidence.
 
         Unlike V7, this path has no center-candidate gate. A calibrated map is
@@ -239,13 +256,30 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         route_gate = route_gate * part_valid.unsqueeze(-1).to(
             route_gate.dtype
         )
-        route_weight = route_gate * part_reliability.unsqueeze(-1)
+        # V11 sharpens only the route used by the residual. The raw sigmoid
+        # remains unchanged for the balanced part-route objective and its
+        # diagnostics. At a learned route probability ``p``, V11 retains
+        # ``floor + (1 - floor) * p`` of V8's contribution. Consequently,
+        # confident target routes remain nearly unchanged while the small
+        # probability accumulated over many background tokens is strongly
+        # reduced. Detaching the retention factor prevents the tracking loss
+        # from exploiting the sharpening nonlinearity to saturate route
+        # logits; V8's original route gradient is merely scaled in
+        # ``[floor, 1]``.
+        route_retention = torch.ones_like(route_gate)
+        residual_route_gate = route_gate
+        if self.spatial_gate_mode == "part_aligned_sharpened":
+            route_retention = self.part_route_residual_floor + (
+                (1.0 - self.part_route_residual_floor) * route_gate.detach()
+            )
+            residual_route_gate = route_gate * route_retention
+        route_weight = residual_route_gate * part_reliability.unsqueeze(-1)
         residual = torch.einsum(
             "bkl,bkc->blc", route_weight, prototypes
         )
         valid_count = part_valid.sum(dim=1, keepdim=True).clamp_min(1)
         residual = residual / valid_count.unsqueeze(-1).to(residual.dtype)
-        return route_logits, route_gate, residual
+        return route_logits, route_gate, residual, route_retention
 
     def _candidate_consensus_statistics(
         self,
@@ -573,8 +607,14 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned",
             "part_aligned_consensus",
             "part_aligned_guidance",
+            "part_aligned_sharpened",
         ):
-            part_route_logits, part_route_gate, residual = (
+            (
+                part_route_logits,
+                part_route_gate,
+                residual,
+                part_route_residual_retention,
+            ) = (
                 self._part_aligned_statistics(
                     similarity,
                     prototypes,
@@ -588,6 +628,18 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 "part_similarity": similarity,
                 "search_global_index": search_global_index,
             }
+            if self.spatial_gate_mode == "part_aligned_sharpened":
+                route_diagnostics.update({
+                    "part_route_residual_retention_mean": (
+                        part_route_residual_retention.mean(dim=(1, 2))
+                    ),
+                    "part_route_residual_retention_min": (
+                        part_route_residual_retention.amin(dim=(1, 2))
+                    ),
+                    "part_route_residual_retention_max": (
+                        part_route_residual_retention.amax(dim=(1, 2))
+                    ),
+                })
         else:
             part_attention = torch.softmax(similarity, dim=1)
             weighted_prototypes = (
@@ -728,9 +780,10 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned",
             "part_aligned_consensus",
             "part_aligned_guidance",
+            "part_aligned_sharpened",
         ):
             # Measure before LayerScale so zero initialization cannot hide a
-            # collapsed routing map during early V8/V9/V10 training.
+            # collapsed routing map during early V8/V9/V10/V11 training.
             residual_energy = residual.square().sum(dim=-1)
             residual_energy_sum = residual_energy.sum(dim=1).clamp_min(
                 self.eps

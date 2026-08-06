@@ -812,6 +812,7 @@ class OSTrackActor(BaseActor):
                 'part_aligned',
                 'part_aligned_consensus',
                 'part_aligned_guidance',
+                'part_aligned_sharpened',
             ):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
@@ -922,6 +923,24 @@ class OSTrackActor(BaseActor):
                             part_route_diagnostics[
                                 'part_route_background_probability'
                             ].detach().item()
+                        ),
+                    })
+                if 'part_route_residual_retention_mean' in pred_dict:
+                    status.update({
+                        "VDRM/part_route_residual_retention_mean": (
+                            pred_dict[
+                                'part_route_residual_retention_mean'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/part_route_residual_retention_min": (
+                            pred_dict[
+                                'part_route_residual_retention_min'
+                            ].detach().min().item()
+                        ),
+                        "VDRM/part_route_residual_retention_max": (
+                            pred_dict[
+                                'part_route_residual_retention_max'
+                            ].detach().max().item()
                         ),
                     })
                 if "vdrm_distractor_applied" in gt_dict:

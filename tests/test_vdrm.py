@@ -241,6 +241,112 @@ class VDRMTest(unittest.TestCase):
         self.assertLessEqual(diagnostics["vdrm_alpha"].item(), 1.5)
         self.assertEqual(diagnostics["vdrm_alpha_raw"].item(), -100.0)
 
+    def test_background_suppressed_route_sharpens_v8_without_new_parameters(self):
+        torch.manual_seed(30)
+        sharpened = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_sharpened",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        reference = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        for name in reference.state_dict():
+            reference.state_dict()[name].copy_(
+                sharpened.state_dict()[name]
+            )
+        sharpened.alpha.data.fill_(-0.5)
+        reference.alpha.data.fill_(-0.5)
+        tokens = torch.randn(2, 64 + 25, 16)
+        global_index = torch.arange(25).unsqueeze(0).repeat(2, 1)
+        template_bbox = torch.tensor(
+            [[0.25, 0.25, 0.50, 0.50]] * 2
+        )
+
+        output, diagnostics = sharpened(
+            tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+        reference_output, reference_diagnostics = reference(
+            tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+
+        torch.testing.assert_close(
+            diagnostics["part_route_gate"],
+            reference_diagnostics["part_route_gate"],
+        )
+        self.assertFalse(torch.equal(output, reference_output))
+        self.assertGreaterEqual(
+            diagnostics[
+                "part_route_residual_retention_min"
+            ].min().item(),
+            0.25,
+        )
+        self.assertLessEqual(
+            diagnostics[
+                "part_route_residual_retention_max"
+            ].max().item(),
+            1.0,
+        )
+        self.assertEqual(
+            set(sharpened.state_dict()), set(reference.state_dict())
+        )
+
+    def test_background_suppressed_route_floor_one_is_exact_v8(self):
+        torch.manual_seed(32)
+        sharpened = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_sharpened",
+            part_route_residual_floor=1.0,
+            alpha_max=1.5,
+        )
+        reference = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        for name in reference.state_dict():
+            reference.state_dict()[name].copy_(
+                sharpened.state_dict()[name]
+            )
+        sharpened.alpha.data.fill_(-0.5)
+        reference.alpha.data.fill_(-0.5)
+        tokens = torch.randn(1, 64 + 25, 16)
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]]
+            ),
+            "search_global_index": torch.arange(25).unsqueeze(0),
+            "search_grid_size": 5,
+        }
+
+        sharpened_output, diagnostics = sharpened(tokens, **kwargs)
+        reference_output, _ = reference(tokens, **kwargs)
+
+        torch.testing.assert_close(sharpened_output, reference_output)
+        torch.testing.assert_close(
+            diagnostics["part_route_residual_retention_mean"],
+            torch.ones(1),
+        )
+
+        with self.assertRaisesRegex(ValueError, r"in \(0, 1\]"):
+            VisibilityDrivenRepresentationModule(
+                num_parts=4,
+                spatial_gate_mode="part_aligned_sharpened",
+                part_route_residual_floor=0.0,
+            )
+
     def test_part_aligned_consensus_exposes_both_supervised_gates(self):
         torch.manual_seed(31)
         module = VisibilityDrivenRepresentationModule(
