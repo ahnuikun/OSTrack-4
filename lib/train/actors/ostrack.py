@@ -813,6 +813,7 @@ class OSTrackActor(BaseActor):
                 'part_aligned_consensus',
                 'part_aligned_guidance',
                 'part_aligned_sharpened',
+                'part_aligned_positive_preserved',
             ):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
@@ -941,6 +942,37 @@ class OSTrackActor(BaseActor):
                             pred_dict[
                                 'part_route_residual_retention_max'
                             ].detach().max().item()
+                        ),
+                    })
+                if (
+                    'part_route_positive_preservation_scale_mean'
+                    in pred_dict
+                ):
+                    status.update({
+                        "VDRM/part_route_positive_preservation_scale_mean": (
+                            pred_dict[
+                                'part_route_positive_preservation_scale_mean'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/part_route_positive_preservation_scale_min": (
+                            pred_dict[
+                                'part_route_positive_preservation_scale_min'
+                            ].detach().min().item()
+                        ),
+                        "VDRM/part_route_positive_preservation_scale_max": (
+                            pred_dict[
+                                'part_route_positive_preservation_scale_max'
+                            ].detach().max().item()
+                        ),
+                        "VDRM/part_route_positive_mass_ratio": (
+                            pred_dict[
+                                'part_route_positive_mass_ratio'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/part_route_positive_part_fraction": (
+                            pred_dict[
+                                'part_route_positive_part_fraction'
+                            ].detach().mean().item()
                         ),
                     })
                 if "vdrm_distractor_applied" in gt_dict:

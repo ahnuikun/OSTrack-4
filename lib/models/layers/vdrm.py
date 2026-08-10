@@ -28,6 +28,10 @@ The first implementation intentionally keeps the design small:
   A deterministic confidence factor preserves most positive-route evidence,
   retains a configurable fraction of every V8 contribution, and introduces
   no candidate gate or additional learned scalar.
+* VDRM-v12 preserves V11's background suppression and restores the aggregate
+  contribution of routes on the calibrated positive side of the existing
+  part-route classifier. The deterministic per-part compensation is detached,
+  bounded by the V11 floor, and keeps the exact V8 parameter schema.
 
 The original ``topk`` reliability is retained for VDRM-v1 checkpoint
 compatibility. VDRM-v2 uses the margin between a part's best match and its
@@ -97,12 +101,14 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_consensus",
             "part_aligned_guidance",
             "part_aligned_sharpened",
+            "part_aligned_positive_preserved",
         ):
             raise ValueError(
                 "spatial_gate_mode must be 'token_match', "
                 "'candidate_consensus', 'part_aligned', or "
                 "'part_aligned_consensus', 'part_aligned_guidance', or "
-                "'part_aligned_sharpened', "
+                "'part_aligned_sharpened', or "
+                "'part_aligned_positive_preserved', "
                 f"got {spatial_gate_mode!r}"
             )
         if candidate_local_radius < 0:
@@ -189,6 +195,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_consensus",
             "part_aligned_guidance",
             "part_aligned_sharpened",
+            "part_aligned_positive_preserved",
         ):
             initial_part_route_scale = torch.tensor(
                 float(part_route_initial_match_scale)
@@ -238,7 +245,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         part_reliability: torch.Tensor,
         part_valid: torch.Tensor,
     ) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]
     ]:
         """Route each part and build its residual from the same evidence.
 
@@ -256,7 +263,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         route_gate = route_gate * part_valid.unsqueeze(-1).to(
             route_gate.dtype
         )
-        # V11 sharpens only the route used by the residual. The raw sigmoid
+        # V11/V12 sharpen only the route used by the residual. The raw sigmoid
         # remains unchanged for the balanced part-route objective and its
         # diagnostics. At a learned route probability ``p``, V11 retains
         # ``floor + (1 - floor) * p`` of V8's contribution. Consequently,
@@ -268,18 +275,71 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         # ``[floor, 1]``.
         route_retention = torch.ones_like(route_gate)
         residual_route_gate = route_gate
-        if self.spatial_gate_mode == "part_aligned_sharpened":
+        residual_route_diagnostics = {}
+        if self.spatial_gate_mode in (
+            "part_aligned_sharpened",
+            "part_aligned_positive_preserved",
+        ):
             route_retention = self.part_route_residual_floor + (
                 (1.0 - self.part_route_residual_floor) * route_gate.detach()
             )
             residual_route_gate = route_gate * route_retention
+
+        if self.spatial_gate_mode == "part_aligned_positive_preserved":
+            # V12 uses the calibrated classifier boundary, not another tuned
+            # threshold, to identify positive route evidence. It restores the
+            # aggregate V8 route mass on that side while retaining V11's
+            # relative sharpening. Both the mask and the compensation are
+            # detached: the tracking loss sees only a bounded rescaling of
+            # V8's original route gradient and receives no gradient through
+            # the positive-set selection or its normalization factor.
+            positive_mask = (
+                route_gate.detach() >= 0.5
+            ) & part_valid.unsqueeze(-1)
+            positive_mask_float = positive_mask.to(route_gate.dtype)
+            positive_mass_v8 = (
+                route_gate.detach() * positive_mask_float
+            ).sum(dim=-1, keepdim=True)
+            positive_mass_sharpened = (
+                residual_route_gate.detach() * positive_mask_float
+            ).sum(dim=-1, keepdim=True)
+            positive_present = positive_mask.any(dim=-1, keepdim=True)
+            preservation_scale = torch.where(
+                positive_present,
+                positive_mass_v8
+                / positive_mass_sharpened.clamp_min(self.eps),
+                torch.ones_like(positive_mass_v8),
+            )
+            residual_route_gate = residual_route_gate * preservation_scale
+            route_retention = route_retention * preservation_scale
+
+            positive_mass_preserved = (
+                residual_route_gate.detach() * positive_mask_float
+            ).sum(dim=-1, keepdim=True)
+            positive_mass_ratio = torch.where(
+                positive_present,
+                positive_mass_preserved
+                / positive_mass_v8.clamp_min(self.eps),
+                torch.ones_like(positive_mass_v8),
+            )
+            residual_route_diagnostics.update({
+                "part_route_positive_preservation_scale": (
+                    preservation_scale
+                ),
+                "part_route_positive_mass_ratio": positive_mass_ratio,
+                "part_route_positive_present": positive_present,
+            })
+
+        residual_route_diagnostics[
+            "part_route_residual_retention"
+        ] = route_retention
         route_weight = residual_route_gate * part_reliability.unsqueeze(-1)
         residual = torch.einsum(
             "bkl,bkc->blc", route_weight, prototypes
         )
         valid_count = part_valid.sum(dim=1, keepdim=True).clamp_min(1)
         residual = residual / valid_count.unsqueeze(-1).to(residual.dtype)
-        return route_logits, route_gate, residual, route_retention
+        return route_logits, route_gate, residual, residual_route_diagnostics
 
     def _candidate_consensus_statistics(
         self,
@@ -608,12 +668,13 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_consensus",
             "part_aligned_guidance",
             "part_aligned_sharpened",
+            "part_aligned_positive_preserved",
         ):
             (
                 part_route_logits,
                 part_route_gate,
                 residual,
-                part_route_residual_retention,
+                residual_route_diagnostics,
             ) = (
                 self._part_aligned_statistics(
                     similarity,
@@ -628,7 +689,15 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 "part_similarity": similarity,
                 "search_global_index": search_global_index,
             }
-            if self.spatial_gate_mode == "part_aligned_sharpened":
+            if self.spatial_gate_mode in (
+                "part_aligned_sharpened",
+                "part_aligned_positive_preserved",
+            ):
+                part_route_residual_retention = (
+                    residual_route_diagnostics[
+                        "part_route_residual_retention"
+                    ]
+                )
                 route_diagnostics.update({
                     "part_route_residual_retention_mean": (
                         part_route_residual_retention.mean(dim=(1, 2))
@@ -638,6 +707,35 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                     ),
                     "part_route_residual_retention_max": (
                         part_route_residual_retention.amax(dim=(1, 2))
+                    ),
+                })
+            if self.spatial_gate_mode == "part_aligned_positive_preserved":
+                preservation_scale = residual_route_diagnostics[
+                    "part_route_positive_preservation_scale"
+                ]
+                positive_mass_ratio = residual_route_diagnostics[
+                    "part_route_positive_mass_ratio"
+                ]
+                positive_present = residual_route_diagnostics[
+                    "part_route_positive_present"
+                ]
+                route_diagnostics.update({
+                    "part_route_positive_preservation_scale_mean": (
+                        preservation_scale.mean(dim=(1, 2))
+                    ),
+                    "part_route_positive_preservation_scale_min": (
+                        preservation_scale.amin(dim=(1, 2))
+                    ),
+                    "part_route_positive_preservation_scale_max": (
+                        preservation_scale.amax(dim=(1, 2))
+                    ),
+                    "part_route_positive_mass_ratio": (
+                        positive_mass_ratio.mean(dim=(1, 2))
+                    ),
+                    "part_route_positive_part_fraction": (
+                        positive_present.to(
+                            part_route_gate.dtype
+                        ).mean(dim=(1, 2))
                     ),
                 })
         else:
@@ -781,9 +879,10 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_consensus",
             "part_aligned_guidance",
             "part_aligned_sharpened",
+            "part_aligned_positive_preserved",
         ):
             # Measure before LayerScale so zero initialization cannot hide a
-            # collapsed routing map during early V8/V9/V10/V11 training.
+            # collapsed routing map during early V8-V12 training.
             residual_energy = residual.square().sum(dim=-1)
             residual_energy_sum = residual_energy.sum(dim=1).clamp_min(
                 self.eps

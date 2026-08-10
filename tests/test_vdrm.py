@@ -347,6 +347,258 @@ class VDRMTest(unittest.TestCase):
                 part_route_residual_floor=0.0,
             )
 
+    def test_positive_preserved_route_restores_v8_positive_mass(self):
+        v8 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        v11 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_sharpened",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        v12 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_positive_preserved",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        calibrated_scale = torch.log(torch.expm1(torch.tensor(1.0)))
+        for module in (v8, v11, v12):
+            module.part_route_log_match_scale.data.copy_(calibrated_scale)
+            module.part_route_match_bias.data.zero_()
+
+        similarity = torch.tensor(
+            [[
+                [0.9, 0.5, 0.1, -0.2, -0.6],
+                [0.7, 0.3, 0.0, -0.4, -0.8],
+                [0.8, 0.2, -0.1, -0.3, -0.7],
+                [0.6, 0.4, 0.0, -0.5, -0.9],
+            ]]
+        )
+        prototypes = torch.randn(1, 4, 8)
+        part_reliability = torch.ones(1, 4)
+        part_valid = torch.ones(1, 4, dtype=torch.bool)
+
+        _, v8_gate, _, v8_diagnostics = v8._part_aligned_statistics(
+            similarity, prototypes, part_reliability, part_valid
+        )
+        _, v11_gate, _, v11_diagnostics = v11._part_aligned_statistics(
+            similarity, prototypes, part_reliability, part_valid
+        )
+        _, v12_gate, _, v12_diagnostics = v12._part_aligned_statistics(
+            similarity, prototypes, part_reliability, part_valid
+        )
+
+        torch.testing.assert_close(v11_gate, v8_gate)
+        torch.testing.assert_close(v12_gate, v8_gate)
+        positive_mask = v8_gate >= 0.5
+        background_mask = ~positive_mask
+        v8_positive_mass = (v8_gate * positive_mask).sum(dim=-1)
+        v12_effective_gate = (
+            v12_gate
+            * v12_diagnostics["part_route_residual_retention"]
+        )
+        v12_positive_mass = (
+            v12_effective_gate * positive_mask
+        ).sum(dim=-1)
+        torch.testing.assert_close(
+            v12_positive_mass, v8_positive_mass, rtol=1e-6, atol=1e-6
+        )
+
+        v11_effective_gate = (
+            v11_gate
+            * v11_diagnostics["part_route_residual_retention"]
+        )
+        self.assertTrue(
+            torch.all(v11_effective_gate[positive_mask]
+                      < v8_gate[positive_mask])
+        )
+        self.assertTrue(
+            torch.all(v12_effective_gate[background_mask]
+                      <= v8_gate[background_mask] + 1e-7)
+        )
+        self.assertTrue(
+            torch.any(v12_effective_gate[background_mask]
+                      < v8_gate[background_mask])
+        )
+        preservation_scale = v12_diagnostics[
+            "part_route_positive_preservation_scale"
+        ]
+        self.assertGreaterEqual(preservation_scale.min().item(), 1.0)
+        self.assertLessEqual(preservation_scale.max().item(), 1.6 + 1e-6)
+        torch.testing.assert_close(
+            v12_diagnostics["part_route_positive_mass_ratio"],
+            torch.ones(1, 4, 1),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        self.assertEqual(set(v12.state_dict()), set(v8.state_dict()))
+        self.assertEqual(set(v11.state_dict()), set(v8.state_dict()))
+        self.assertTrue(
+            torch.equal(
+                v8_diagnostics["part_route_residual_retention"],
+                torch.ones_like(v8_gate),
+            )
+        )
+
+    def test_positive_preserved_route_without_positive_evidence_is_v11(self):
+        v11 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_sharpened",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        v12 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_positive_preserved",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        v12.load_state_dict(v11.state_dict())
+        calibrated_scale = torch.log(torch.expm1(torch.tensor(1.0)))
+        for module in (v11, v12):
+            module.part_route_log_match_scale.data.copy_(calibrated_scale)
+            module.part_route_match_bias.data.zero_()
+
+        similarity = -torch.ones(2, 4, 6)
+        prototypes = torch.randn(2, 4, 8)
+        part_reliability = torch.ones(2, 4)
+        part_valid = torch.ones(2, 4, dtype=torch.bool)
+        _, _, v11_residual, v11_diagnostics = (
+            v11._part_aligned_statistics(
+                similarity, prototypes, part_reliability, part_valid
+            )
+        )
+        _, _, v12_residual, v12_diagnostics = (
+            v12._part_aligned_statistics(
+                similarity, prototypes, part_reliability, part_valid
+            )
+        )
+
+        torch.testing.assert_close(v12_residual, v11_residual)
+        torch.testing.assert_close(
+            v12_diagnostics["part_route_residual_retention"],
+            v11_diagnostics["part_route_residual_retention"],
+        )
+        torch.testing.assert_close(
+            v12_diagnostics["part_route_positive_preservation_scale"],
+            torch.ones(2, 4, 1),
+        )
+        self.assertFalse(
+            v12_diagnostics["part_route_positive_present"].any().item()
+        )
+
+    def test_positive_preserved_route_has_finite_route_gradients(self):
+        torch.manual_seed(33)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_positive_preserved",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        module.alpha.data.fill_(-0.5)
+        tokens = torch.randn(2, 64 + 25, 16, requires_grad=True)
+        output, diagnostics = module(
+            tokens,
+            template_length=64,
+            template_bbox=torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]] * 2
+            ),
+            search_global_index=torch.arange(25).unsqueeze(0).repeat(2, 1),
+            search_grid_size=5,
+        )
+
+        output.square().mean().backward()
+
+        self.assertIsNotNone(module.part_route_log_match_scale.grad)
+        self.assertIsNotNone(module.part_route_match_bias.grad)
+        self.assertTrue(
+            torch.isfinite(module.part_route_log_match_scale.grad).item()
+        )
+        self.assertTrue(
+            torch.isfinite(module.part_route_match_bias.grad).item()
+        )
+        self.assertFalse(
+            diagnostics[
+                "part_route_positive_preservation_scale_mean"
+            ].requires_grad
+        )
+        self.assertTrue(torch.isfinite(tokens.grad).all())
+
+    def test_positive_preserved_route_zero_alpha_preserves_forward(self):
+        torch.manual_seed(34)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_positive_preserved",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        tokens = torch.randn(2, 64 + 25, 16)
+
+        output, diagnostics = module(
+            tokens,
+            template_length=64,
+            template_bbox=torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]] * 2
+            ),
+            search_global_index=torch.arange(25).unsqueeze(0).repeat(2, 1),
+            search_grid_size=5,
+        )
+
+        self.assertTrue(torch.equal(output, tokens))
+        self.assertTrue(
+            torch.isfinite(
+                diagnostics[
+                    "part_route_positive_preservation_scale_mean"
+                ]
+            ).all()
+        )
+        self.assertEqual(diagnostics["vdrm_alpha"].item(), 0.0)
+
+    def test_positive_preserved_route_floor_one_is_exact_v8(self):
+        torch.manual_seed(35)
+        v8 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        v12 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_positive_preserved",
+            part_route_residual_floor=1.0,
+            alpha_max=1.5,
+        )
+        v12.load_state_dict(v8.state_dict())
+        v8.alpha.data.fill_(-0.5)
+        v12.alpha.data.copy_(v8.alpha.data)
+        tokens = torch.randn(1, 64 + 25, 16)
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]]
+            ),
+            "search_global_index": torch.arange(25).unsqueeze(0),
+            "search_grid_size": 5,
+        }
+
+        v8_output, _ = v8(tokens, **kwargs)
+        v12_output, diagnostics = v12(tokens, **kwargs)
+
+        torch.testing.assert_close(v12_output, v8_output)
+        torch.testing.assert_close(
+            diagnostics["part_route_residual_retention_mean"],
+            torch.ones(1),
+        )
+        torch.testing.assert_close(
+            diagnostics[
+                "part_route_positive_preservation_scale_mean"
+            ],
+            torch.ones(1),
+        )
+
     def test_part_aligned_consensus_exposes_both_supervised_gates(self):
         torch.manual_seed(31)
         module = VisibilityDrivenRepresentationModule(
@@ -667,6 +919,95 @@ class VDRMTest(unittest.TestCase):
         self.assertIsNotNone(candidate_logits.grad)
         self.assertIsNotNone(part_route_logits.grad)
         self.assertTrue(torch.isfinite(candidate_logits.grad).all())
+        self.assertTrue(torch.isfinite(part_route_logits.grad).all())
+
+    def test_v12_actor_trains_route_and_logs_preservation(self):
+        cfg = SimpleNamespace(
+            DATA=SimpleNamespace(SEARCH=SimpleNamespace(SIZE=64)),
+            MODEL=SimpleNamespace(
+                VDRM=SimpleNamespace(
+                    ENABLED=True,
+                    RELIABILITY_MODE="topk",
+                    SPATIAL_GATE_MODE=(
+                        "part_aligned_positive_preserved"
+                    ),
+                ),
+                BACKBONE=SimpleNamespace(STRIDE=16),
+            ),
+            TRAIN=SimpleNamespace(
+                VDRM_AUX_WARMUP_EPOCHS=1,
+                VDRM_VISIBILITY_WEIGHT=0.5,
+                VDRM_RANK_WEIGHT=0.5,
+                VDRM_CANDIDATE_WEIGHT=0.0,
+                VDRM_PART_ROUTE_WEIGHT=0.1,
+                VDRM_PART_TARGET_DILATION=1.0,
+            ),
+        )
+
+        def giou_objective(prediction, target):
+            return (
+                (prediction - target).square().mean(),
+                prediction.new_ones(prediction.shape[0]),
+            )
+
+        actor = OSTrackActor(
+            net=None,
+            objective={
+                "giou": giou_objective,
+                "l1": lambda prediction, target: (
+                    prediction - target
+                ).abs().mean(),
+                "focal": lambda prediction, target: (
+                    prediction - target
+                ).square().mean(),
+            },
+            loss_weight={"giou": 2.0, "l1": 5.0, "focal": 1.0},
+            settings=SimpleNamespace(batchsize=1),
+            cfg=cfg,
+        )
+        part_route_logits = torch.zeros(1, 4, 16, requires_grad=True)
+        pred_dict = {
+            "pred_boxes": torch.tensor(
+                [[[0.5, 0.5, 0.5, 0.5]]], requires_grad=True
+            ),
+            "score_map": torch.zeros(1, 1, 4, 4, requires_grad=True),
+            "part_route_logits": part_route_logits,
+            "part_valid": torch.ones(1, 4, dtype=torch.bool),
+            "search_global_index": torch.arange(16).unsqueeze(0),
+            "visual_reliability": torch.ones(1),
+            "vdrm_alpha": torch.zeros(()),
+            "part_route_positive_preservation_scale_mean": (
+                torch.tensor([1.2])
+            ),
+            "part_route_positive_preservation_scale_min": (
+                torch.tensor([1.0])
+            ),
+            "part_route_positive_preservation_scale_max": (
+                torch.tensor([1.4])
+            ),
+            "part_route_positive_mass_ratio": torch.tensor([1.0]),
+            "part_route_positive_part_fraction": torch.tensor([0.75]),
+        }
+        gt_dict = {
+            "search_anno": torch.tensor([[[0.25, 0.25, 0.5, 0.5]]]),
+            "epoch": 1,
+        }
+
+        loss, status = actor.compute_losses(pred_dict, gt_dict)
+
+        self.assertGreater(status["Loss/vdrm_part_route"], 0.0)
+        self.assertEqual(status["Loss/vdrm_candidate"], 0.0)
+        self.assertAlmostEqual(
+            status[
+                "VDRM/part_route_positive_preservation_scale_mean"
+            ],
+            1.2,
+        )
+        self.assertEqual(
+            status["VDRM/part_route_positive_mass_ratio"], 1.0
+        )
+        loss.backward()
+        self.assertIsNotNone(part_route_logits.grad)
         self.assertTrue(torch.isfinite(part_route_logits.grad).all())
 
     def test_part_route_targets_follow_the_four_target_parts(self):

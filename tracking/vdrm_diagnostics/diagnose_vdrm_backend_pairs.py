@@ -348,6 +348,11 @@ class BackendRunner:
             "part_route_residual_retention_mean",
             "part_route_residual_retention_min",
             "part_route_residual_retention_max",
+            "part_route_positive_preservation_scale_mean",
+            "part_route_positive_preservation_scale_min",
+            "part_route_positive_preservation_scale_max",
+            "part_route_positive_mass_ratio",
+            "part_route_positive_part_fraction",
             "vdrm_alpha",
             "vdrm_residual_clip_rate",
             "vdrm_raw_delta_relative_norm",
@@ -591,6 +596,31 @@ def build_pair_row(
         "part_route_residual_retention_max": float(
             vdrm_output.get(
                 "part_route_residual_retention_max", math.nan
+            )
+        ),
+        "part_route_positive_preservation_scale_mean": float(
+            vdrm_output.get(
+                "part_route_positive_preservation_scale_mean", math.nan
+            )
+        ),
+        "part_route_positive_preservation_scale_min": float(
+            vdrm_output.get(
+                "part_route_positive_preservation_scale_min", math.nan
+            )
+        ),
+        "part_route_positive_preservation_scale_max": float(
+            vdrm_output.get(
+                "part_route_positive_preservation_scale_max", math.nan
+            )
+        ),
+        "part_route_positive_mass_ratio": float(
+            vdrm_output.get(
+                "part_route_positive_mass_ratio", math.nan
+            )
+        ),
+        "part_route_positive_part_fraction": float(
+            vdrm_output.get(
+                "part_route_positive_part_fraction", math.nan
             )
         ),
         "baseline_response_reliability": baseline_response[

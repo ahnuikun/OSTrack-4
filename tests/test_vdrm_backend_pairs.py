@@ -97,6 +97,24 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         self.assertEqual(v11.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
         self.assertEqual(v11.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
 
+    def test_v12_positive_preserved_route_config_is_registered(self):
+        _, _, v12 = load_config(
+            "vitb_256_mae_ce_vdrm_v12_pepr_hncp_32x4_ep300"
+        )
+
+        self.assertTrue(v12.MODEL.VDRM.ENABLED)
+        self.assertEqual(
+            v12.MODEL.VDRM.SPATIAL_GATE_MODE,
+            "part_aligned_positive_preserved",
+        )
+        self.assertEqual(
+            v12.MODEL.VDRM.PART_ROUTE_RESIDUAL_FLOOR, 0.25
+        )
+        self.assertEqual(v12.MODEL.VDRM.ALPHA_MAX, 1.5)
+        self.assertEqual(v12.MODEL.PRETRAIN_FILE, "mae_pretrain_vit_base.pth")
+        self.assertEqual(v12.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
+        self.assertEqual(v12.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
+
     def test_map_box_back_uses_the_shared_anchor(self):
         mapped = map_box_back_from_anchor(
             predicted_box=[50.0, 50.0, 20.0, 10.0],
@@ -195,6 +213,11 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
                     "part_route_residual_retention_mean": 0.6,
                     "part_route_residual_retention_min": 0.3,
                     "part_route_residual_retention_max": 0.9,
+                    "part_route_positive_preservation_scale_mean": 1.2,
+                    "part_route_positive_preservation_scale_min": 1.0,
+                    "part_route_positive_preservation_scale_max": 1.4,
+                    "part_route_positive_mass_ratio": 1.0,
+                    "part_route_positive_part_fraction": 0.75,
                     "visual_reliability": reliability,
                     "vdrm_response_reliability": reliability,
                     "combined_reliability": reliability,
@@ -252,6 +275,30 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         )
         self.assertEqual(
             summary["mean_part_route_residual_retention_max"], 0.9
+        )
+        self.assertEqual(
+            summary[
+                "mean_part_route_positive_preservation_scale_mean"
+            ],
+            1.2,
+        )
+        self.assertEqual(
+            summary[
+                "mean_part_route_positive_preservation_scale_min"
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            summary[
+                "mean_part_route_positive_preservation_scale_max"
+            ],
+            1.4,
+        )
+        self.assertEqual(
+            summary["mean_part_route_positive_mass_ratio"], 1.0
+        )
+        self.assertEqual(
+            summary["mean_part_route_positive_part_fraction"], 0.75
         )
 
 

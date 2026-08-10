@@ -35,6 +35,11 @@ ROUTE_SAFEGUARD_METRICS = (
     "part_route_residual_retention_mean",
     "part_route_residual_retention_min",
     "part_route_residual_retention_max",
+    "part_route_positive_preservation_scale_mean",
+    "part_route_positive_preservation_scale_min",
+    "part_route_positive_preservation_scale_max",
+    "part_route_positive_mass_ratio",
+    "part_route_positive_part_fraction",
 )
 
 

@@ -45,7 +45,9 @@ cfg.MODEL.VDRM.RESIDUAL_MAX_RATIO = 0.0
 # every template part at the same search tokens used to build its residual.
 # V10 adds ``part_aligned_guidance``. V11 adds
 # ``part_aligned_sharpened``, which suppresses V8's accumulated background
-# route leakage without adding a candidate gate or learned modulation.
+# route leakage without adding a candidate gate or learned modulation. V12
+# adds ``part_aligned_positive_preserved`` to restore V8's aggregate positive
+# route contribution after V11 sharpening, with no new learned parameters.
 # ``token_match`` keeps the exact V1-V6 path.
 cfg.MODEL.VDRM.SPATIAL_GATE_MODE = "token_match"
 cfg.MODEL.VDRM.CANDIDATE_LOCAL_RADIUS = 1
@@ -54,9 +56,9 @@ cfg.MODEL.VDRM.CANDIDATE_INITIAL_MATCH_SCALE = 5.0
 cfg.MODEL.VDRM.CANDIDATE_INITIAL_MATCH_BIAS = -2.5
 cfg.MODEL.VDRM.PART_ROUTE_INITIAL_MATCH_SCALE = 5.0
 cfg.MODEL.VDRM.PART_ROUTE_INITIAL_MATCH_BIAS = -2.5
-# V11 retains this fraction of every V8 part-route contribution while
-# monotonically preserving more evidence as the supervised route probability
-# approaches one. A default of one keeps all earlier modes bit-identical.
+# V11/V12 retain this fraction of every V8 part-route contribution before V12
+# applies its bounded positive-evidence compensation. A default of one keeps
+# all earlier modes bit-identical.
 cfg.MODEL.VDRM.PART_ROUTE_RESIDUAL_FLOOR = 1.0
 # V10 bounds the candidate correction to preserve at least half of every V8
 # part-aligned residual token. It is unused by all earlier modes.
