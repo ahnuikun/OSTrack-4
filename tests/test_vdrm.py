@@ -347,6 +347,168 @@ class VDRMTest(unittest.TestCase):
                 part_route_residual_floor=0.0,
             )
 
+    def test_reliability_safe_route_is_exact_v11_for_confident_parts(self):
+        v11 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_sharpened",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        v13 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_reliability_safe",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        v13.load_state_dict(v11.state_dict())
+        similarity = torch.randn(2, 4, 7)
+        prototypes = torch.randn(2, 4, 8)
+        part_reliability = torch.tensor(
+            [[0.50, 0.60, 0.80, 1.00], [0.55, 0.70, 0.90, 0.95]]
+        )
+        part_valid = torch.ones(2, 4, dtype=torch.bool)
+
+        _, v11_gate, v11_residual, v11_diagnostics = (
+            v11._part_aligned_statistics(
+                similarity, prototypes, part_reliability, part_valid
+            )
+        )
+        _, v13_gate, v13_residual, v13_diagnostics = (
+            v13._part_aligned_statistics(
+                similarity, prototypes, part_reliability, part_valid
+            )
+        )
+
+        torch.testing.assert_close(v13_gate, v11_gate)
+        torch.testing.assert_close(v13_residual, v11_residual)
+        torch.testing.assert_close(
+            v13_diagnostics["part_route_residual_retention"],
+            v11_diagnostics["part_route_residual_retention"],
+        )
+        torch.testing.assert_close(
+            v13_diagnostics["part_reliability_safety_factor"],
+            torch.ones_like(part_reliability),
+        )
+        self.assertEqual(set(v13.state_dict()), set(v11.state_dict()))
+
+    def test_reliability_safe_route_is_monotone_and_never_amplifies(self):
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_reliability_safe",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        similarity = torch.randn(1, 4, 6)
+        prototypes = torch.randn(1, 4, 8, requires_grad=True)
+        part_reliability = torch.tensor(
+            [[0.00, 0.25, 0.49, 0.50]], requires_grad=True
+        )
+        part_valid = torch.ones(1, 4, dtype=torch.bool)
+
+        _, route_gate, residual, diagnostics = (
+            module._part_aligned_statistics(
+                similarity, prototypes, part_reliability, part_valid
+            )
+        )
+        expected_factor = torch.tensor([[0.00, 0.50, 0.98, 1.00]])
+        torch.testing.assert_close(
+            diagnostics["part_reliability_safety_factor"],
+            expected_factor,
+        )
+        effective_reliability = part_reliability.detach() * expected_factor
+        self.assertTrue(
+            torch.all(effective_reliability[:, 1:]
+                      >= effective_reliability[:, :-1])
+        )
+        self.assertTrue(
+            torch.all(effective_reliability <= part_reliability.detach())
+        )
+        expected_weight = (
+            route_gate
+            * diagnostics["part_route_residual_retention"]
+            * part_reliability.unsqueeze(-1)
+            * expected_factor.unsqueeze(-1)
+        )
+        expected_residual = torch.einsum(
+            "bkl,bkc->blc", expected_weight, prototypes
+        ) / 4.0
+        torch.testing.assert_close(residual, expected_residual)
+
+        residual.square().mean().backward()
+        self.assertFalse(
+            diagnostics["part_reliability_safety_factor"].requires_grad
+        )
+        self.assertTrue(torch.isfinite(part_reliability.grad).all())
+        self.assertTrue(torch.isfinite(prototypes.grad).all())
+
+    def test_reliability_safe_route_zero_alpha_preserves_forward(self):
+        torch.manual_seed(36)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_reliability_safe",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        tokens = torch.randn(2, 64 + 25, 16)
+
+        output, diagnostics = module(
+            tokens,
+            template_length=64,
+            template_bbox=torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]] * 2
+            ),
+            search_global_index=torch.arange(25).unsqueeze(0).repeat(2, 1),
+            search_grid_size=5,
+        )
+
+        self.assertTrue(torch.equal(output, tokens))
+        for name in (
+            "part_reliability_safety_factor_mean",
+            "part_reliability_safety_factor_min",
+            "part_reliability_safety_factor_max",
+            "part_reliability_suppressed_fraction",
+            "part_reliability_suppression_mean",
+        ):
+            self.assertTrue(torch.isfinite(diagnostics[name]).all())
+            self.assertFalse(diagnostics[name].requires_grad)
+        self.assertEqual(diagnostics["vdrm_alpha"].item(), 0.0)
+
+    def test_reliability_safe_route_reports_neutral_empty_parts(self):
+        torch.manual_seed(37)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_reliability_safe",
+            part_route_residual_floor=0.25,
+            alpha_max=1.5,
+        )
+        module.alpha.data.fill_(-0.5)
+        tokens = torch.randn(1, 64 + 25, 16)
+
+        output, diagnostics = module(
+            tokens,
+            template_length=64,
+            template_bbox=torch.zeros(1, 4),
+            search_global_index=torch.arange(25).unsqueeze(0),
+            search_grid_size=5,
+        )
+
+        self.assertTrue(torch.equal(output, tokens))
+        self.assertFalse(diagnostics["part_valid"].any().item())
+        for name in (
+            "part_reliability_safety_factor_mean",
+            "part_reliability_safety_factor_min",
+            "part_reliability_safety_factor_max",
+        ):
+            torch.testing.assert_close(diagnostics[name], torch.ones(1))
+        torch.testing.assert_close(
+            diagnostics["part_reliability_suppressed_fraction"],
+            torch.zeros(1),
+        )
+        torch.testing.assert_close(
+            diagnostics["part_reliability_suppression_mean"],
+            torch.zeros(1),
+        )
+
     def test_positive_preserved_route_restores_v8_positive_mass(self):
         v8 = VisibilityDrivenRepresentationModule(
             num_parts=4,
@@ -1005,6 +1167,86 @@ class VDRMTest(unittest.TestCase):
         )
         self.assertEqual(
             status["VDRM/part_route_positive_mass_ratio"], 1.0
+        )
+        loss.backward()
+        self.assertIsNotNone(part_route_logits.grad)
+        self.assertTrue(torch.isfinite(part_route_logits.grad).all())
+
+    def test_v13_actor_trains_route_and_logs_reliability_safety(self):
+        cfg = SimpleNamespace(
+            DATA=SimpleNamespace(SEARCH=SimpleNamespace(SIZE=64)),
+            MODEL=SimpleNamespace(
+                VDRM=SimpleNamespace(
+                    ENABLED=True,
+                    RELIABILITY_MODE="topk",
+                    SPATIAL_GATE_MODE=(
+                        "part_aligned_reliability_safe"
+                    ),
+                ),
+                BACKBONE=SimpleNamespace(STRIDE=16),
+            ),
+            TRAIN=SimpleNamespace(
+                VDRM_AUX_WARMUP_EPOCHS=1,
+                VDRM_VISIBILITY_WEIGHT=0.5,
+                VDRM_RANK_WEIGHT=0.5,
+                VDRM_CANDIDATE_WEIGHT=0.0,
+                VDRM_PART_ROUTE_WEIGHT=0.1,
+                VDRM_PART_TARGET_DILATION=1.0,
+            ),
+        )
+
+        def giou_objective(prediction, target):
+            return (
+                (prediction - target).square().mean(),
+                prediction.new_ones(prediction.shape[0]),
+            )
+
+        actor = OSTrackActor(
+            net=None,
+            objective={
+                "giou": giou_objective,
+                "l1": lambda prediction, target: (
+                    prediction - target
+                ).abs().mean(),
+                "focal": lambda prediction, target: (
+                    prediction - target
+                ).square().mean(),
+            },
+            loss_weight={"giou": 2.0, "l1": 5.0, "focal": 1.0},
+            settings=SimpleNamespace(batchsize=1),
+            cfg=cfg,
+        )
+        part_route_logits = torch.zeros(1, 4, 16, requires_grad=True)
+        pred_dict = {
+            "pred_boxes": torch.tensor(
+                [[[0.5, 0.5, 0.5, 0.5]]], requires_grad=True
+            ),
+            "score_map": torch.zeros(1, 1, 4, 4, requires_grad=True),
+            "part_route_logits": part_route_logits,
+            "part_valid": torch.ones(1, 4, dtype=torch.bool),
+            "search_global_index": torch.arange(16).unsqueeze(0),
+            "visual_reliability": torch.ones(1),
+            "vdrm_alpha": torch.zeros(()),
+            "part_reliability_safety_factor_mean": torch.tensor([0.8]),
+            "part_reliability_safety_factor_min": torch.tensor([0.4]),
+            "part_reliability_safety_factor_max": torch.tensor([1.0]),
+            "part_reliability_suppressed_fraction": torch.tensor([0.5]),
+            "part_reliability_suppression_mean": torch.tensor([0.2]),
+        }
+        gt_dict = {
+            "search_anno": torch.tensor([[[0.25, 0.25, 0.5, 0.5]]]),
+            "epoch": 1,
+        }
+
+        loss, status = actor.compute_losses(pred_dict, gt_dict)
+
+        self.assertGreater(status["Loss/vdrm_part_route"], 0.0)
+        self.assertEqual(status["Loss/vdrm_candidate"], 0.0)
+        self.assertAlmostEqual(
+            status["VDRM/part_reliability_safety_factor_mean"], 0.8
+        )
+        self.assertAlmostEqual(
+            status["VDRM/part_reliability_suppressed_fraction"], 0.5
         )
         loss.backward()
         self.assertIsNotNone(part_route_logits.grad)

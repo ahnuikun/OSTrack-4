@@ -814,6 +814,7 @@ class OSTrackActor(BaseActor):
                 'part_aligned_guidance',
                 'part_aligned_sharpened',
                 'part_aligned_positive_preserved',
+                'part_aligned_reliability_safe',
             ):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
@@ -942,6 +943,34 @@ class OSTrackActor(BaseActor):
                             pred_dict[
                                 'part_route_residual_retention_max'
                             ].detach().max().item()
+                        ),
+                    })
+                if 'part_reliability_safety_factor_mean' in pred_dict:
+                    status.update({
+                        "VDRM/part_reliability_safety_factor_mean": (
+                            pred_dict[
+                                'part_reliability_safety_factor_mean'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/part_reliability_safety_factor_min": (
+                            pred_dict[
+                                'part_reliability_safety_factor_min'
+                            ].detach().min().item()
+                        ),
+                        "VDRM/part_reliability_safety_factor_max": (
+                            pred_dict[
+                                'part_reliability_safety_factor_max'
+                            ].detach().max().item()
+                        ),
+                        "VDRM/part_reliability_suppressed_fraction": (
+                            pred_dict[
+                                'part_reliability_suppressed_fraction'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/part_reliability_suppression_mean": (
+                            pred_dict[
+                                'part_reliability_suppression_mean'
+                            ].detach().mean().item()
                         ),
                     })
                 if (

@@ -40,6 +40,11 @@ ROUTE_SAFEGUARD_METRICS = (
     "part_route_positive_preservation_scale_max",
     "part_route_positive_mass_ratio",
     "part_route_positive_part_fraction",
+    "part_reliability_safety_factor_mean",
+    "part_reliability_safety_factor_min",
+    "part_reliability_safety_factor_max",
+    "part_reliability_suppressed_fraction",
+    "part_reliability_suppression_mean",
 )
 
 

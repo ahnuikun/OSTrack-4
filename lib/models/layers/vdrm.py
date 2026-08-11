@@ -102,13 +102,15 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_guidance",
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
+            "part_aligned_reliability_safe",
         ):
             raise ValueError(
                 "spatial_gate_mode must be 'token_match', "
                 "'candidate_consensus', 'part_aligned', or "
                 "'part_aligned_consensus', 'part_aligned_guidance', or "
-                "'part_aligned_sharpened', or "
-                "'part_aligned_positive_preserved', "
+                "'part_aligned_sharpened', "
+                "'part_aligned_positive_preserved', or "
+                "'part_aligned_reliability_safe', "
                 f"got {spatial_gate_mode!r}"
             )
         if candidate_local_radius < 0:
@@ -188,7 +190,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             self.register_parameter("candidate_log_match_scale", None)
             self.register_parameter("candidate_match_bias", None)
 
-        # V8/V9 calibrate each part-to-token similarity independently. These
+        # V8-V13 calibrate each part-to-token similarity independently. These
         # parameters remain absent from every earlier forward path.
         if self.spatial_gate_mode in (
             "part_aligned",
@@ -196,6 +198,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_guidance",
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
+            "part_aligned_reliability_safe",
         ):
             initial_part_route_scale = torch.tensor(
                 float(part_route_initial_match_scale)
@@ -263,7 +266,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         route_gate = route_gate * part_valid.unsqueeze(-1).to(
             route_gate.dtype
         )
-        # V11/V12 sharpen only the route used by the residual. The raw sigmoid
+        # V11-V13 sharpen only the route used by the residual. The raw sigmoid
         # remains unchanged for the balanced part-route objective and its
         # diagnostics. At a learned route probability ``p``, V11 retains
         # ``floor + (1 - floor) * p`` of V8's contribution. Consequently,
@@ -279,6 +282,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         if self.spatial_gate_mode in (
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
+            "part_aligned_reliability_safe",
         ):
             route_retention = self.part_route_residual_floor + (
                 (1.0 - self.part_route_residual_floor) * route_gate.detach()
@@ -333,7 +337,34 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         residual_route_diagnostics[
             "part_route_residual_retention"
         ] = route_retention
-        route_weight = residual_route_gate * part_reliability.unsqueeze(-1)
+
+        # V13 leaves confident parts exactly on the V11 path and applies only
+        # a detached, monotone safety attenuation to uncertain parts. The
+        # sigmoid decision boundary supplies the fixed 0.5 pivot: s(r)=1 for
+        # r>=0.5 and s(r)=2r otherwise. Consequently r*s(r) is continuous,
+        # non-decreasing, and never exceeds V11's original reliability weight.
+        # Applying this factor per part avoids suppressing reliable visible
+        # parts because another part is occluded. Detaching it preserves the
+        # existing reliability objective instead of giving tracking loss a
+        # shortcut through the safety path.
+        part_reliability_safety_factor = torch.ones_like(part_reliability)
+        if self.spatial_gate_mode == "part_aligned_reliability_safe":
+            part_reliability_safety_factor = (
+                2.0 * part_reliability.detach()
+            ).clamp(max=1.0)
+            part_reliability_safety_factor = (
+                part_reliability_safety_factor
+                * part_valid.to(part_reliability_safety_factor.dtype)
+            )
+            residual_route_diagnostics[
+                "part_reliability_safety_factor"
+            ] = part_reliability_safety_factor
+
+        route_weight = (
+            residual_route_gate
+            * part_reliability.unsqueeze(-1)
+            * part_reliability_safety_factor.unsqueeze(-1)
+        )
         residual = torch.einsum(
             "bkl,bkc->blc", route_weight, prototypes
         )
@@ -669,6 +700,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_guidance",
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
+            "part_aligned_reliability_safe",
         ):
             (
                 part_route_logits,
@@ -692,6 +724,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             if self.spatial_gate_mode in (
                 "part_aligned_sharpened",
                 "part_aligned_positive_preserved",
+                "part_aligned_reliability_safe",
             ):
                 part_route_residual_retention = (
                     residual_route_diagnostics[
@@ -707,6 +740,52 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                     ),
                     "part_route_residual_retention_max": (
                         part_route_residual_retention.amax(dim=(1, 2))
+                    ),
+                })
+            if self.spatial_gate_mode == "part_aligned_reliability_safe":
+                safety_factor = residual_route_diagnostics[
+                    "part_reliability_safety_factor"
+                ]
+                valid_float = part_valid.to(safety_factor.dtype)
+                valid_count = valid_float.sum(dim=1).clamp_min(1.0)
+                safety_min = safety_factor.masked_fill(~part_valid, 1.0)
+                safety_max = safety_factor.masked_fill(~part_valid, 0.0)
+                has_valid_part = part_valid.any(dim=1)
+                safety_mean = (
+                    (safety_factor * valid_float).sum(dim=1)
+                    / valid_count
+                )
+                route_diagnostics.update({
+                    "part_reliability_safety_factor_mean": (
+                        torch.where(
+                            has_valid_part,
+                            safety_mean,
+                            torch.ones_like(valid_count),
+                        )
+                    ),
+                    "part_reliability_safety_factor_min": (
+                        torch.where(
+                            has_valid_part,
+                            safety_min.amin(dim=1),
+                            torch.ones_like(valid_count),
+                        )
+                    ),
+                    "part_reliability_safety_factor_max": (
+                        torch.where(
+                            has_valid_part,
+                            safety_max.amax(dim=1),
+                            torch.ones_like(valid_count),
+                        )
+                    ),
+                    "part_reliability_suppressed_fraction": (
+                        (
+                            (safety_factor < 1.0) & part_valid
+                        ).to(safety_factor.dtype).sum(dim=1)
+                        / valid_count
+                    ),
+                    "part_reliability_suppression_mean": (
+                        ((1.0 - safety_factor) * valid_float).sum(dim=1)
+                        / valid_count
                     ),
                 })
             if self.spatial_gate_mode == "part_aligned_positive_preserved":
@@ -880,9 +959,10 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_guidance",
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
+            "part_aligned_reliability_safe",
         ):
             # Measure before LayerScale so zero initialization cannot hide a
-            # collapsed routing map during early V8-V12 training.
+            # collapsed routing map during early V8-V13 training.
             residual_energy = residual.square().sum(dim=-1)
             residual_energy_sum = residual_energy.sum(dim=1).clamp_min(
                 self.eps

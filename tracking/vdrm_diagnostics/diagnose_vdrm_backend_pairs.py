@@ -353,6 +353,11 @@ class BackendRunner:
             "part_route_positive_preservation_scale_max",
             "part_route_positive_mass_ratio",
             "part_route_positive_part_fraction",
+            "part_reliability_safety_factor_mean",
+            "part_reliability_safety_factor_min",
+            "part_reliability_safety_factor_max",
+            "part_reliability_suppressed_fraction",
+            "part_reliability_suppression_mean",
             "vdrm_alpha",
             "vdrm_residual_clip_rate",
             "vdrm_raw_delta_relative_norm",
@@ -621,6 +626,31 @@ def build_pair_row(
         "part_route_positive_part_fraction": float(
             vdrm_output.get(
                 "part_route_positive_part_fraction", math.nan
+            )
+        ),
+        "part_reliability_safety_factor_mean": float(
+            vdrm_output.get(
+                "part_reliability_safety_factor_mean", math.nan
+            )
+        ),
+        "part_reliability_safety_factor_min": float(
+            vdrm_output.get(
+                "part_reliability_safety_factor_min", math.nan
+            )
+        ),
+        "part_reliability_safety_factor_max": float(
+            vdrm_output.get(
+                "part_reliability_safety_factor_max", math.nan
+            )
+        ),
+        "part_reliability_suppressed_fraction": float(
+            vdrm_output.get(
+                "part_reliability_suppressed_fraction", math.nan
+            )
+        ),
+        "part_reliability_suppression_mean": float(
+            vdrm_output.get(
+                "part_reliability_suppression_mean", math.nan
             )
         ),
         "baseline_response_reliability": baseline_response[
