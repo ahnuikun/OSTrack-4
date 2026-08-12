@@ -32,6 +32,11 @@ The first implementation intentionally keeps the design small:
   contribution of routes on the calibrated positive side of the existing
   part-route classifier. The deterministic per-part compensation is detached,
   bounded by the V11 floor, and keeps the exact V8 parameter schema.
+* VDRM-v14 returns to V8's unmodified part-aligned residual and adds a
+  candidate-level identity auxiliary readout. The readout is supervised from
+  raw part similarity, cannot gate the residual, and receives detached global
+  reliability weights so it cannot recalibrate V8's route or reliability
+  branches through its auxiliary loss.
 
 The original ``topk`` reliability is retained for VDRM-v1 checkpoint
 compatibility. VDRM-v2 uses the margin between a part's best match and its
@@ -103,6 +108,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
+            "part_aligned_identity_aux",
         ):
             raise ValueError(
                 "spatial_gate_mode must be 'token_match', "
@@ -110,7 +116,8 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 "'part_aligned_consensus', 'part_aligned_guidance', or "
                 "'part_aligned_sharpened', "
                 "'part_aligned_positive_preserved', or "
-                "'part_aligned_reliability_safe', "
+                "'part_aligned_reliability_safe', or "
+                "'part_aligned_identity_aux', "
                 f"got {spatial_gate_mode!r}"
             )
         if candidate_local_radius < 0:
@@ -169,13 +176,14 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         )
         self.match_bias = nn.Parameter(torch.tensor(float(initial_match_bias)))
 
-        # Candidate calibration is used by V7 and V9. Keeping these parameters
-        # absent in the other modes preserves every previous checkpoint
-        # contract.
+        # Candidate calibration is used by V7, V9, V10, and V14. Keeping these
+        # parameters absent in the other modes preserves every previous
+        # checkpoint contract.
         if self.spatial_gate_mode in (
             "candidate_consensus",
             "part_aligned_consensus",
             "part_aligned_guidance",
+            "part_aligned_identity_aux",
         ):
             initial_candidate_scale = torch.tensor(
                 float(candidate_initial_match_scale)
@@ -190,7 +198,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             self.register_parameter("candidate_log_match_scale", None)
             self.register_parameter("candidate_match_bias", None)
 
-        # V8-V13 calibrate each part-to-token similarity independently. These
+        # V8-V14 calibrate each part-to-token similarity independently. These
         # parameters remain absent from every earlier forward path.
         if self.spatial_gate_mode in (
             "part_aligned",
@@ -199,6 +207,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
+            "part_aligned_identity_aux",
         ):
             initial_part_route_scale = torch.tensor(
                 float(part_route_initial_match_scale)
@@ -384,8 +393,9 @@ class VisibilityDrivenRepresentationModule(nn.Module):
 
         Each retained token is treated as a candidate location. For every
         template part, the strongest positive evidence in a fixed local
-        neighbourhood is collected on the original search grid. V7 supplies
-        raw similarities and V9 supplies supervised part-route probabilities.
+        neighbourhood is collected on the original search grid. V7 and V14
+        supply raw similarities, while V9/V10 supply supervised part-route
+        probabilities.
         The gate is calibrated from the strongest
         ``candidate_consensus_parts`` values, so one isolated part or
         spatially scattered evidence cannot enable the residual by itself.
@@ -701,6 +711,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
+            "part_aligned_identity_aux",
         ):
             (
                 part_route_logits,
@@ -832,10 +843,11 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "candidate_consensus",
             "part_aligned_consensus",
             "part_aligned_guidance",
+            "part_aligned_identity_aux",
         ):
             if search_global_index is None or search_grid_size is None:
                 raise ValueError(
-                    "candidate-consensus gating requires search_global_index "
+                    "candidate-consensus readout requires search_global_index "
                     "and search_grid_size"
                 )
             candidate_evidence = similarity
@@ -855,6 +867,16 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 # It must not repeat V9's reduction of positive part-route
                 # probabilities or change backbone features.
                 candidate_evidence = candidate_evidence.detach()
+                candidate_reliability = candidate_reliability.detach()
+            if self.spatial_gate_mode == "part_aligned_identity_aux":
+                # V14 is an auxiliary identity objective on raw cosine part
+                # evidence. Its candidate map is deliberately absent from the
+                # residual forward path. Detaching only reliability prevents
+                # this loss from moving V8's global match calibration while
+                # preserving identity gradients to template/search features.
+                # Raw similarity also bypasses the part-route calibration, so
+                # candidate focal loss has no direct V9-style shortcut through
+                # the route scale and bias.
                 candidate_reliability = candidate_reliability.detach()
             (
                 candidate_logits,

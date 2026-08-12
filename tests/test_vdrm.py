@@ -1010,6 +1010,114 @@ class VDRMTest(unittest.TestCase):
         self.assertIsNone(module.log_match_scale.grad)
         self.assertIsNone(module.match_bias.grad)
 
+    def test_v14_identity_aux_is_exact_v8_for_fixed_common_parameters(self):
+        torch.manual_seed(47)
+        v8 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        v14 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_identity_aux",
+            candidate_local_radius=1,
+            candidate_consensus_parts=3,
+            alpha_max=1.5,
+        )
+        for name, value in v8.state_dict().items():
+            getattr(v14, name).data.copy_(value)
+        v8.alpha.data.fill_(-0.65)
+        v14.alpha.data.copy_(v8.alpha.data)
+        tokens = torch.randn(2, 64 + 25, 16)
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]] * 2
+            ),
+            "search_global_index": torch.arange(25).unsqueeze(0).repeat(2, 1),
+            "search_grid_size": 5,
+        }
+
+        v8_output, v8_diagnostics = v8(tokens, **kwargs)
+        v14_output, v14_diagnostics = v14(tokens, **kwargs)
+
+        self.assertTrue(torch.equal(v14_output, v8_output))
+        torch.testing.assert_close(
+            v14_diagnostics["part_route_gate"],
+            v8_diagnostics["part_route_gate"],
+            rtol=0.0,
+            atol=0.0,
+        )
+        self.assertEqual(
+            v14_diagnostics["candidate_identity_logits"].shape,
+            (2, 25),
+        )
+        self.assertEqual(
+            set(v14.state_dict()).difference(v8.state_dict()),
+            {"candidate_log_match_scale", "candidate_match_bias"},
+        )
+
+    def test_v14_identity_aux_isolates_tracking_and_candidate_gradients(self):
+        torch.manual_seed(53)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_identity_aux",
+            candidate_local_radius=1,
+            candidate_consensus_parts=3,
+            alpha_max=1.5,
+        )
+        module.alpha.data.fill_(-0.5)
+        global_index = torch.arange(25).unsqueeze(0)
+        template_bbox = torch.tensor([[0.25, 0.25, 0.50, 0.50]])
+        tokens = torch.randn(1, 64 + 25, 16, requires_grad=True)
+
+        output, _ = module(
+            tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+        output[:, 64:].square().mean().backward()
+
+        self.assertIsNone(module.candidate_log_match_scale.grad)
+        self.assertIsNone(module.candidate_match_bias.grad)
+        self.assertIsNotNone(module.part_route_log_match_scale.grad)
+        self.assertIsNotNone(module.part_route_match_bias.grad)
+
+        module.zero_grad(set_to_none=True)
+        candidate_tokens = torch.randn(
+            1, 64 + 25, 16, requires_grad=True
+        )
+        _, diagnostics = module(
+            candidate_tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+            search_global_index=global_index,
+            search_grid_size=5,
+        )
+        gaussian_map = torch.zeros(1, 5, 5)
+        gaussian_map[:, 2, 2] = 1.0
+        candidate_loss = compute_vdrm_candidate_focal_loss(
+            diagnostics["candidate_identity_logits"],
+            diagnostics["search_global_index"],
+            gaussian_map,
+            sample_valid=diagnostics["candidate_consensus_valid"],
+        )
+        candidate_loss.backward()
+
+        self.assertIsNotNone(module.candidate_log_match_scale.grad)
+        self.assertIsNotNone(module.candidate_match_bias.grad)
+        self.assertTrue(
+            torch.isfinite(module.candidate_log_match_scale.grad).all()
+        )
+        self.assertTrue(torch.isfinite(candidate_tokens.grad).all())
+        self.assertIsNone(module.part_route_log_match_scale.grad)
+        self.assertIsNone(module.part_route_match_bias.grad)
+        self.assertIsNone(module.log_match_scale.grad)
+        self.assertIsNone(module.match_bias.grad)
+        self.assertIsNone(module.alpha.grad)
+
     def test_v9_actor_trains_candidate_and_part_route_objectives(self):
         vdrm_cfg = SimpleNamespace(
             ENABLED=True,
@@ -1027,6 +1135,78 @@ class VDRMTest(unittest.TestCase):
                 VDRM_VISIBILITY_WEIGHT=0.5,
                 VDRM_RANK_WEIGHT=0.5,
                 VDRM_CANDIDATE_WEIGHT=0.1,
+                VDRM_PART_ROUTE_WEIGHT=0.1,
+                VDRM_PART_TARGET_DILATION=1.0,
+            ),
+        )
+
+        def giou_objective(prediction, target):
+            return (
+                (prediction - target).square().mean(),
+                prediction.new_ones(prediction.shape[0]),
+            )
+
+        actor = OSTrackActor(
+            net=None,
+            objective={
+                "giou": giou_objective,
+                "l1": lambda prediction, target: (
+                    prediction - target
+                ).abs().mean(),
+                "focal": lambda prediction, target: (
+                    prediction - target
+                ).square().mean(),
+            },
+            loss_weight={"giou": 2.0, "l1": 5.0, "focal": 1.0},
+            settings=SimpleNamespace(batchsize=1),
+            cfg=cfg,
+        )
+        candidate_logits = torch.zeros(1, 16, requires_grad=True)
+        part_route_logits = torch.zeros(1, 4, 16, requires_grad=True)
+        pred_dict = {
+            "pred_boxes": torch.tensor(
+                [[[0.5, 0.5, 0.5, 0.5]]], requires_grad=True
+            ),
+            "score_map": torch.zeros(1, 1, 4, 4, requires_grad=True),
+            "candidate_identity_logits": candidate_logits,
+            "candidate_consensus_valid": torch.ones(1, dtype=torch.bool),
+            "part_route_logits": part_route_logits,
+            "part_valid": torch.ones(1, 4, dtype=torch.bool),
+            "search_global_index": torch.arange(16).unsqueeze(0),
+            "visual_reliability": torch.ones(1),
+            "vdrm_alpha": torch.zeros(()),
+        }
+        gt_dict = {
+            "search_anno": torch.tensor([[[0.25, 0.25, 0.5, 0.5]]]),
+            "epoch": 1,
+        }
+
+        loss, status = actor.compute_losses(pred_dict, gt_dict)
+
+        self.assertGreater(status["Loss/vdrm_candidate"], 0.0)
+        self.assertGreater(status["Loss/vdrm_part_route"], 0.0)
+        loss.backward()
+        self.assertIsNotNone(candidate_logits.grad)
+        self.assertIsNotNone(part_route_logits.grad)
+        self.assertTrue(torch.isfinite(candidate_logits.grad).all())
+        self.assertTrue(torch.isfinite(part_route_logits.grad).all())
+
+    def test_v14_actor_trains_identity_aux_and_v8_part_route_objectives(self):
+        cfg = SimpleNamespace(
+            DATA=SimpleNamespace(SEARCH=SimpleNamespace(SIZE=64)),
+            MODEL=SimpleNamespace(
+                VDRM=SimpleNamespace(
+                    ENABLED=True,
+                    RELIABILITY_MODE="topk",
+                    SPATIAL_GATE_MODE="part_aligned_identity_aux",
+                ),
+                BACKBONE=SimpleNamespace(STRIDE=16),
+            ),
+            TRAIN=SimpleNamespace(
+                VDRM_AUX_WARMUP_EPOCHS=1,
+                VDRM_VISIBILITY_WEIGHT=0.5,
+                VDRM_RANK_WEIGHT=0.5,
+                VDRM_CANDIDATE_WEIGHT=0.02,
                 VDRM_PART_ROUTE_WEIGHT=0.1,
                 VDRM_PART_TARGET_DILATION=1.0,
             ),

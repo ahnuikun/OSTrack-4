@@ -122,9 +122,9 @@ def compute_vdrm_candidate_focal_loss(
 ):
     """Supervise candidate consensus on retained CE search locations.
 
-    This is the CenterNet focal objective applied before residual injection.
-    It teaches the spatial gate to select the target candidate, rather than
-    merely predicting whether template parts occur somewhere in the search.
+    This is the CenterNet focal objective applied to candidate evidence. Some
+    modes use it before residual injection; V14 keeps it auxiliary and never
+    feeds its candidate map into the visual residual.
     """
     if candidate_logits.ndim != 2:
         raise ValueError(
@@ -790,6 +790,7 @@ class OSTrackActor(BaseActor):
                 'candidate_consensus',
                 'part_aligned_consensus',
                 'part_aligned_guidance',
+                'part_aligned_identity_aux',
             ):
                 required_candidate_outputs = {
                     'candidate_identity_logits', 'search_global_index'
@@ -815,6 +816,7 @@ class OSTrackActor(BaseActor):
                 'part_aligned_sharpened',
                 'part_aligned_positive_preserved',
                 'part_aligned_reliability_safe',
+                'part_aligned_identity_aux',
             ):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
