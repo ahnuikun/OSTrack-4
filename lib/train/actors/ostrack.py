@@ -1054,6 +1054,12 @@ class OSTrackActor(BaseActor):
                     })
                 residual_status_keys = {
                     "vdrm_residual_clip_rate": "VDRM/residual_clip_rate",
+                    "vdrm_residual_clip_scale_mean": (
+                        "VDRM/residual_clip_scale_mean"
+                    ),
+                    "vdrm_residual_clip_scale_min": (
+                        "VDRM/residual_clip_scale_min"
+                    ),
                     "vdrm_raw_delta_relative_norm": (
                         "VDRM/raw_delta_relative_norm"
                     ),

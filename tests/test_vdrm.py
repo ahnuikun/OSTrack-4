@@ -176,6 +176,118 @@ class VDRMTest(unittest.TestCase):
 
         self.assertTrue(torch.equal(default_output, explicit_output))
 
+    def test_v15_tail_bound_preserves_v8_below_bound_and_caps_tail(self):
+        torch.manual_seed(59)
+        v8 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        v15 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            residual_max_ratio=0.35,
+            alpha_max=1.5,
+        )
+        v15.load_state_dict(v8.state_dict())
+        v8.alpha.data.fill_(-20.0)
+        v15.alpha.data.copy_(v8.alpha.data)
+        template_tokens = torch.randn(2, 64, 32)
+        search_tokens = torch.randn(2, 36, 32)
+        search_tokens[:, :18] *= 20.0
+        search_tokens[:, 18:] *= 0.05
+        tokens = torch.cat((template_tokens, search_tokens), dim=1)
+        template_bbox = torch.tensor(
+            [[0.25, 0.25, 0.50, 0.50]] * 2
+        )
+        global_index = torch.arange(36).unsqueeze(0).repeat(2, 1)
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": template_bbox,
+            "search_global_index": global_index,
+            "search_grid_size": 6,
+        }
+
+        v8_output, _ = v8(tokens, **kwargs)
+        v15_output, diagnostics = v15(tokens, **kwargs)
+        input_search = tokens[:, 64:]
+        raw_update = v8_output[:, 64:] - input_search
+        bounded_update = v15_output[:, 64:] - input_search
+        input_norm = torch.linalg.vector_norm(input_search, dim=-1)
+        raw_ratio = (
+            torch.linalg.vector_norm(raw_update, dim=-1)
+            / input_norm.clamp_min(1e-6)
+        )
+        bounded_ratio = (
+            torch.linalg.vector_norm(bounded_update, dim=-1)
+            / input_norm.clamp_min(1e-6)
+        )
+        below_bound = raw_ratio <= 0.35
+        above_bound = raw_ratio > 0.35
+
+        self.assertTrue(below_bound.any().item())
+        self.assertTrue(above_bound.any().item())
+        self.assertTrue(
+            torch.equal(
+                v15_output[:, 64:][below_bound],
+                v8_output[:, 64:][below_bound],
+            )
+        )
+        self.assertLessEqual(bounded_ratio.max().item(), 0.35 + 1e-5)
+        self.assertGreater(diagnostics["vdrm_residual_clip_rate"].item(), 0.0)
+        self.assertLess(
+            diagnostics["vdrm_residual_clip_scale_min"].item(), 1.0
+        )
+        self.assertLess(
+            diagnostics["vdrm_residual_clip_scale_mean"].item(), 1.0
+        )
+        self.assertEqual(set(v15.state_dict()), set(v8.state_dict()))
+
+    def test_v15_tail_bound_has_finite_gradients_and_zero_alpha_identity(self):
+        torch.manual_seed(61)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            residual_max_ratio=0.35,
+            alpha_max=1.5,
+        )
+        tokens = torch.randn(2, 64 + 36, 24, requires_grad=True)
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]] * 2
+            ),
+            "search_global_index": torch.arange(36).unsqueeze(0).repeat(2, 1),
+            "search_grid_size": 6,
+        }
+
+        identity_output, identity_diagnostics = module(tokens, **kwargs)
+        self.assertTrue(torch.equal(identity_output, tokens))
+        self.assertEqual(
+            identity_diagnostics["vdrm_residual_clip_scale_mean"].item(),
+            1.0,
+        )
+
+        module.alpha.data.fill_(-20.0)
+        output, diagnostics = module(tokens, **kwargs)
+        loss = output[:, 64:].square().mean()
+        loss.backward()
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(tokens.grad).all())
+        for parameter in (
+            module.alpha,
+            module.log_match_scale,
+            module.match_bias,
+            module.part_route_log_match_scale,
+            module.part_route_match_bias,
+        ):
+            self.assertIsNotNone(parameter.grad)
+            self.assertTrue(torch.isfinite(parameter.grad).all())
+        self.assertGreaterEqual(
+            diagnostics["vdrm_residual_clip_scale_min"].item(), 0.0
+        )
+
     def test_default_mode_preserves_pre_v7_state_dict_schema(self):
         module = VisibilityDrivenRepresentationModule(num_parts=4, topk=4)
 

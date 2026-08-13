@@ -23,6 +23,8 @@ RESIDUAL_METRICS = (
     "residual_top10_energy_fraction",
     "residual_spatial_entropy_normalized",
     "vdrm_residual_clip_rate",
+    "vdrm_residual_clip_scale_mean",
+    "vdrm_residual_clip_scale_min",
     "vdrm_raw_delta_relative_norm",
     "vdrm_delta_relative_norm",
 )

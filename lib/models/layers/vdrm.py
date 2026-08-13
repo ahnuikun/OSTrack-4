@@ -37,6 +37,10 @@ The first implementation intentionally keeps the design small:
   raw part similarity, cannot gate the residual, and receives detached global
   reliability weights so it cannot recalibrate V8's route or reliability
   branches through its auxiliary loss.
+* VDRM-v15 keeps V8's route, losses, and parameter schema, but independently
+  bounds each complete post-LayerScale token update to the high-tail trust
+  region selected before training. This reuses V4's parameter-free projection
+  at a deliberately non-restrictive V8-tail boundary.
 
 The original ``topk`` reliability is retained for VDRM-v1 checkpoint
 compatibility. VDRM-v2 uses the margin between a part's best match and its
@@ -941,11 +945,11 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         effective_alpha = self._effective_alpha()
         raw_delta = effective_alpha * residual
 
-        # V4 bounds the *complete* update after alpha, so the learned scalar
+        # V4/V15 bound the *complete* update after alpha, so the learned scalar
         # cannot compensate for the bound by growing in magnitude. The
         # reference norm is detached to prevent the backbone from increasing
         # token norms merely to relax the constraint. A ratio of zero retains
-        # the exact V1/V2/V3 forward path and checkpoint behavior.
+        # the exact unbounded forward path and checkpoint behavior.
         reference_norm = torch.linalg.vector_norm(
             search_tokens.detach(), dim=-1, keepdim=True
         )
@@ -962,8 +966,11 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 raw_delta_norm > max_delta_norm
             ).to(raw_delta.dtype).mean()
         else:
+            clip_scale = torch.ones_like(raw_delta_norm)
             delta = raw_delta
             residual_clip_rate = raw_delta.new_zeros(())
+        residual_clip_scale_mean = clip_scale.mean()
+        residual_clip_scale_min = clip_scale.amin()
 
         safe_reference_norm = reference_norm.clamp_min(self.eps)
         raw_delta_relative_norm = (
@@ -1036,6 +1043,8 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "vdrm_alpha": effective_alpha,
             "vdrm_alpha_raw": self.alpha,
             "vdrm_residual_clip_rate": residual_clip_rate,
+            "vdrm_residual_clip_scale_mean": residual_clip_scale_mean,
+            "vdrm_residual_clip_scale_min": residual_clip_scale_min,
             "vdrm_raw_delta_relative_norm": raw_delta_relative_norm,
             "vdrm_delta_relative_norm": delta_relative_norm,
         }
