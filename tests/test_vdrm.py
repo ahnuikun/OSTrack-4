@@ -288,6 +288,170 @@ class VDRMTest(unittest.TestCase):
             diagnostics["vdrm_residual_clip_scale_min"].item(), 0.0
         )
 
+    def test_v16_bidirectional_assignment_conserves_v8_route_mass(self):
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_bidirectional",
+            alpha_max=1.5,
+        )
+        route_logits = torch.tensor(
+            [
+                [
+                    [3.0, 1.0, -1.0, -2.0, 0.0],
+                    [-1.0, 2.5, 0.5, -2.0, 0.0],
+                    [-2.0, -1.0, 3.0, 0.5, 0.0],
+                    [0.5, -2.0, -1.0, 3.0, 0.0],
+                ],
+                [
+                    [1.0, 0.0, -1.0, 2.0, -2.0],
+                    [0.0, 2.0, -1.0, 1.0, -2.0],
+                    [2.0, -1.0, 0.0, 1.0, -2.0],
+                    [-1.0, 1.0, 2.0, 0.0, -2.0],
+                ],
+            ],
+            requires_grad=True,
+        )
+        part_reliability = torch.tensor(
+            [[0.9, 0.7, 0.5, 0.3], [0.8, 0.6, 0.4, 0.0]]
+        )
+        part_valid = torch.tensor(
+            [[True, True, True, True], [True, True, True, False]]
+        )
+        v8_route_weight = (
+            route_logits.sigmoid()
+            * part_reliability.unsqueeze(-1)
+            * part_valid.unsqueeze(-1)
+        )
+
+        route_weight, diagnostics = (
+            module._mass_conserving_bidirectional_assignment(
+                route_logits,
+                v8_route_weight,
+                part_valid,
+            )
+        )
+
+        self.assertTrue(
+            torch.allclose(
+                route_weight.sum(dim=1),
+                v8_route_weight.sum(dim=1),
+                atol=1e-6,
+                rtol=1e-6,
+            )
+        )
+        self.assertTrue(torch.equal(route_weight[1, 3], torch.zeros(5)))
+        self.assertLessEqual(
+            diagnostics["part_assignment_mass_error_max"].max().item(),
+            1e-6,
+        )
+        self.assertTrue(
+            (
+                diagnostics["part_assignment_total_variation"] > 0.0
+            ).all().item()
+        )
+        loss = route_weight.square().mean()
+        loss.backward()
+        self.assertIsNotNone(route_logits.grad)
+        self.assertTrue(torch.isfinite(route_logits.grad).all())
+
+        empty_weight, empty_diagnostics = (
+            module._mass_conserving_bidirectional_assignment(
+                torch.zeros(1, 4, 3),
+                torch.zeros(1, 4, 3),
+                torch.zeros(1, 4, dtype=torch.bool),
+            )
+        )
+        self.assertTrue(
+            torch.equal(empty_weight, torch.zeros_like(empty_weight))
+        )
+        for value in empty_diagnostics.values():
+            self.assertTrue(torch.isfinite(value).all())
+
+    def test_v16_uniform_spatial_evidence_reduces_to_v8_mixture(self):
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_bidirectional",
+            alpha_max=1.5,
+        )
+        route_logits = torch.zeros(2, 4, 7)
+        reliability = torch.tensor(
+            [[0.2, 0.4, 0.6, 0.8], [0.9, 0.3, 0.7, 0.5]]
+        )
+        part_valid = torch.ones(2, 4, dtype=torch.bool)
+        v8_route_weight = route_logits.sigmoid() * reliability.unsqueeze(-1)
+
+        route_weight, diagnostics = (
+            module._mass_conserving_bidirectional_assignment(
+                route_logits,
+                v8_route_weight,
+                part_valid,
+            )
+        )
+
+        self.assertTrue(
+            torch.allclose(
+                route_weight, v8_route_weight, atol=1e-6, rtol=1e-6
+            )
+        )
+        self.assertLessEqual(
+            diagnostics["part_assignment_total_variation"].max().item(),
+            1e-6,
+        )
+
+    def test_v16_forward_keeps_schema_identity_and_finite_gradients(self):
+        torch.manual_seed(67)
+        v8 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        v16 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_bidirectional",
+            alpha_max=1.5,
+        )
+        v16.load_state_dict(v8.state_dict(), strict=True)
+        self.assertEqual(set(v16.state_dict()), set(v8.state_dict()))
+
+        tokens = torch.randn(2, 64 + 31, 24, requires_grad=True)
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]] * 2
+            ),
+            "search_global_index": torch.arange(31).unsqueeze(0).repeat(2, 1),
+            "search_grid_size": 6,
+        }
+
+        identity_output, identity_diagnostics = v16(tokens, **kwargs)
+        self.assertTrue(torch.equal(identity_output, tokens))
+        self.assertLessEqual(
+            identity_diagnostics[
+                "part_assignment_mass_error_max"
+            ].max().item(),
+            1e-6,
+        )
+
+        v16.alpha.data.fill_(-1.0)
+        output, diagnostics = v16(tokens, **kwargs)
+        loss = output[:, 64:].square().mean()
+        loss.backward()
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(tokens.grad).all())
+        for parameter in v16.parameters():
+            self.assertIsNotNone(parameter.grad)
+            self.assertTrue(torch.isfinite(parameter.grad).all())
+        self.assertTrue(
+            torch.isfinite(diagnostics["part_assignment_entropy"]).all()
+        )
+        self.assertLessEqual(
+            diagnostics[
+                "part_assignment_mass_error_max"
+            ].max().item(),
+            1e-6,
+        )
+
     def test_default_mode_preserves_pre_v7_state_dict_schema(self):
         module = VisibilityDrivenRepresentationModule(num_parts=4, topk=4)
 

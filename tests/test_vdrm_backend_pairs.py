@@ -148,6 +148,22 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         self.assertEqual(v15.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
         self.assertEqual(v15.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
 
+    def test_v16_mass_conserving_bidirectional_config_is_registered(self):
+        _, _, v16 = load_config(
+            "vitb_256_mae_ce_vdrm_v16_mcba_hncp_32x4_ep300"
+        )
+
+        self.assertTrue(v16.MODEL.VDRM.ENABLED)
+        self.assertEqual(
+            v16.MODEL.VDRM.SPATIAL_GATE_MODE,
+            "part_aligned_bidirectional",
+        )
+        self.assertEqual(v16.MODEL.VDRM.RESIDUAL_MAX_RATIO, 0.0)
+        self.assertEqual(v16.MODEL.VDRM.ALPHA_MAX, 1.5)
+        self.assertEqual(v16.MODEL.PRETRAIN_FILE, "mae_pretrain_vit_base.pth")
+        self.assertEqual(v16.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
+        self.assertEqual(v16.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
+
     def test_map_box_back_uses_the_shared_anchor(self):
         mapped = map_box_back_from_anchor(
             predicted_box=[50.0, 50.0, 20.0, 10.0],
@@ -240,6 +256,9 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
                     "response_peak_shift_normalized": abs(delta),
                     "residual_active_token_fraction": 1.0,
                     "residual_spatial_entropy_normalized": 0.9,
+                    "part_assignment_total_variation": 0.15,
+                    "part_assignment_entropy": 0.8,
+                    "part_assignment_mass_error_max": 1e-7,
                     "candidate_modulation": 0.2,
                     "candidate_modulation_factor_min": 0.9,
                     "candidate_modulation_factor_max": 1.1,
@@ -291,6 +310,13 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         self.assertIsNone(residual["spearman_with_vdrm_iou"])
         self.assertEqual(
             summary["mean_residual_active_token_fraction"], 1.0
+        )
+        self.assertEqual(
+            summary["mean_part_assignment_total_variation"], 0.15
+        )
+        self.assertEqual(summary["mean_part_assignment_entropy"], 0.8)
+        self.assertEqual(
+            summary["mean_part_assignment_mass_error_max"], 1e-7
         )
         self.assertEqual(
             summary["candidate_guidance"]["candidate_modulation"]["mean"],

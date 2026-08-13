@@ -41,6 +41,10 @@ The first implementation intentionally keeps the design small:
   bounds each complete post-LayerScale token update to the high-tail trust
   region selected before training. This reuses V4's parameter-free projection
   at a deliberately non-restrictive V8-tail boundary.
+* VDRM-v16 keeps V8's effective route mass at every search token, but
+  redistributes that mass among template parts using bidirectional part-token
+  evidence. It changes identity assignment without a new gate, parameter,
+  loss, threshold, or residual-magnitude control.
 
 The original ``topk`` reliability is retained for VDRM-v1 checkpoint
 compatibility. VDRM-v2 uses the margin between a part's best match and its
@@ -113,6 +117,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
             "part_aligned_identity_aux",
+            "part_aligned_bidirectional",
         ):
             raise ValueError(
                 "spatial_gate_mode must be 'token_match', "
@@ -122,6 +127,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 "'part_aligned_positive_preserved', or "
                 "'part_aligned_reliability_safe', or "
                 "'part_aligned_identity_aux', "
+                "'part_aligned_bidirectional', "
                 f"got {spatial_gate_mode!r}"
             )
         if candidate_local_radius < 0:
@@ -202,7 +208,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             self.register_parameter("candidate_log_match_scale", None)
             self.register_parameter("candidate_match_bias", None)
 
-        # V8-V14 calibrate each part-to-token similarity independently. These
+        # V8-V16 calibrate each part-to-token similarity independently. These
         # parameters remain absent from every earlier forward path.
         if self.spatial_gate_mode in (
             "part_aligned",
@@ -212,6 +218,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
             "part_aligned_identity_aux",
+            "part_aligned_bidirectional",
         ):
             initial_part_route_scale = torch.tensor(
                 float(part_route_initial_match_scale)
@@ -253,6 +260,101 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         return self.candidate_modulation_max * torch.tanh(
             self.candidate_modulation / self.candidate_modulation_max
         )
+
+    def _mass_conserving_bidirectional_assignment(
+        self,
+        route_logits: torch.Tensor,
+        v8_route_weight: torch.Tensor,
+        part_valid: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Redistribute each token's V8 route mass by mutual correspondence.
+
+        ``v8_route_weight`` already contains V8's calibrated part route and
+        continuous part reliability. Token-to-part identity probability is
+        therefore computed from that exact effective evidence. Part-to-token
+        spatial probability is computed from the calibrated route logits.
+        Combining both directions in log space avoids probability underflow.
+
+        The resulting assignment is normalized only across parts at each
+        token and multiplied by the original per-token V8 mass. Consequently,
+        this operation changes prototype identity mixture without adding a
+        gate or changing the scalar amount of route evidence at that token.
+        """
+        if route_logits.shape != v8_route_weight.shape:
+            raise ValueError(
+                "route_logits and v8_route_weight must have equal shape, "
+                f"got {tuple(route_logits.shape)} and "
+                f"{tuple(v8_route_weight.shape)}"
+            )
+        if part_valid.shape != route_logits.shape[:2]:
+            raise ValueError(
+                "part_valid must have shape [B, K], got "
+                f"{tuple(part_valid.shape)} for route logits "
+                f"{tuple(route_logits.shape)}"
+            )
+
+        valid_mask = part_valid.unsqueeze(-1)
+        valid_float = valid_mask.to(route_logits.dtype)
+        very_negative = torch.finfo(route_logits.dtype).min
+
+        identity_logits = torch.log(
+            v8_route_weight.clamp_min(self.eps)
+        ).masked_fill(~valid_mask, very_negative)
+        identity_log_probability = F.log_softmax(identity_logits, dim=1)
+
+        spatial_logits = route_logits.masked_fill(
+            ~valid_mask, very_negative
+        )
+        spatial_log_probability = F.log_softmax(spatial_logits, dim=-1)
+
+        joint_logits = (
+            identity_log_probability + spatial_log_probability
+        ).masked_fill(~valid_mask, very_negative)
+        assignment = F.softmax(joint_logits, dim=1) * valid_float
+        assignment_sum = assignment.sum(dim=1, keepdim=True)
+        assignment = torch.where(
+            assignment_sum > 0.0,
+            assignment / assignment_sum.clamp_min(self.eps),
+            torch.zeros_like(assignment),
+        )
+
+        v8_route_mass = v8_route_weight.sum(dim=1, keepdim=True)
+        route_weight = assignment * v8_route_mass
+
+        active_token = (v8_route_mass.squeeze(1) > self.eps).to(
+            route_logits.dtype
+        )
+        active_count = active_token.sum(dim=1).clamp_min(1.0)
+        v8_assignment = (
+            v8_route_weight / v8_route_mass.clamp_min(self.eps)
+        )
+        total_variation = 0.5 * (
+            assignment - v8_assignment
+        ).abs().sum(dim=1)
+        assignment_entropy = -(
+            assignment * torch.log(assignment.clamp_min(self.eps))
+        ).sum(dim=1)
+        valid_count = part_valid.sum(dim=1).to(route_logits.dtype)
+        entropy_normalizer = torch.log(valid_count.clamp_min(2.0))
+        normalized_entropy = torch.where(
+            valid_count[:, None] > 1.0,
+            assignment_entropy / entropy_normalizer[:, None],
+            torch.zeros_like(assignment_entropy),
+        )
+        mass_error = (
+            route_weight.sum(dim=1, keepdim=True) - v8_route_mass
+        ).abs()
+        diagnostics = {
+            "part_assignment_total_variation": (
+                (total_variation * active_token).sum(dim=1) / active_count
+            ),
+            "part_assignment_entropy": (
+                (normalized_entropy * active_token).sum(dim=1)
+                / active_count
+            ),
+            "part_assignment_mass_error_max": mass_error.amax(dim=(1, 2)),
+        }
+        return route_weight, diagnostics
 
     def _part_aligned_statistics(
         self,
@@ -378,6 +480,15 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             * part_reliability.unsqueeze(-1)
             * part_reliability_safety_factor.unsqueeze(-1)
         )
+        if self.spatial_gate_mode == "part_aligned_bidirectional":
+            route_weight, assignment_diagnostics = (
+                self._mass_conserving_bidirectional_assignment(
+                    route_logits,
+                    route_weight,
+                    part_valid,
+                )
+            )
+            residual_route_diagnostics.update(assignment_diagnostics)
         residual = torch.einsum(
             "bkl,bkc->blc", route_weight, prototypes
         )
@@ -716,6 +827,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
             "part_aligned_identity_aux",
+            "part_aligned_bidirectional",
         ):
             (
                 part_route_logits,
@@ -830,6 +942,24 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                         positive_present.to(
                             part_route_gate.dtype
                         ).mean(dim=(1, 2))
+                    ),
+                })
+            if self.spatial_gate_mode == "part_aligned_bidirectional":
+                route_diagnostics.update({
+                    "part_assignment_total_variation": (
+                        residual_route_diagnostics[
+                            "part_assignment_total_variation"
+                        ]
+                    ),
+                    "part_assignment_entropy": (
+                        residual_route_diagnostics[
+                            "part_assignment_entropy"
+                        ]
+                    ),
+                    "part_assignment_mass_error_max": (
+                        residual_route_diagnostics[
+                            "part_assignment_mass_error_max"
+                        ]
                     ),
                 })
         else:
@@ -989,9 +1119,10 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
+            "part_aligned_bidirectional",
         ):
             # Measure before LayerScale so zero initialization cannot hide a
-            # collapsed routing map during early V8-V13 training.
+            # collapsed routing map during early V8-V16 training.
             residual_energy = residual.square().sum(dim=-1)
             residual_energy_sum = residual_energy.sum(dim=1).clamp_min(
                 self.eps

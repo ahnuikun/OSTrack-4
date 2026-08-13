@@ -49,7 +49,9 @@ cfg.MODEL.VDRM.RESIDUAL_MAX_RATIO = 0.0
 # adds ``part_aligned_positive_preserved`` to restore V8's aggregate positive
 # route contribution after V11 sharpening. V13 adds
 # ``part_aligned_reliability_safe`` to attenuate only low-reliability parts
-# on the V11 path. Neither mode introduces new learned parameters.
+# on the V11 path. V16 adds ``part_aligned_bidirectional`` to redistribute,
+# but exactly conserve, each token's V8 route mass using mutual part-token
+# evidence. None of these modes introduces new learned parameters.
 # ``token_match`` keeps the exact V1-V6 path.
 cfg.MODEL.VDRM.SPATIAL_GATE_MODE = "token_match"
 cfg.MODEL.VDRM.CANDIDATE_LOCAL_RADIUS = 1

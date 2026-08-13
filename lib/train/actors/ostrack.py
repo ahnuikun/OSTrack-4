@@ -817,6 +817,7 @@ class OSTrackActor(BaseActor):
                 'part_aligned_positive_preserved',
                 'part_aligned_reliability_safe',
                 'part_aligned_identity_aux',
+                'part_aligned_bidirectional',
             ):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
@@ -1004,6 +1005,24 @@ class OSTrackActor(BaseActor):
                             pred_dict[
                                 'part_route_positive_part_fraction'
                             ].detach().mean().item()
+                        ),
+                    })
+                if 'part_assignment_total_variation' in pred_dict:
+                    status.update({
+                        "VDRM/part_assignment_total_variation": (
+                            pred_dict[
+                                'part_assignment_total_variation'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/part_assignment_entropy": (
+                            pred_dict[
+                                'part_assignment_entropy'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/part_assignment_mass_error_max": (
+                            pred_dict[
+                                'part_assignment_mass_error_max'
+                            ].detach().max().item()
                         ),
                     })
                 if "vdrm_distractor_applied" in gt_dict:
