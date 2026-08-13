@@ -105,8 +105,16 @@ def main():
         # Epoch 10 activates both auxiliary losses at a non-zero warm-up weight.
         "epoch": 10,
     }
-    if bool(getattr(cfg.TRAIN, "VDRM_ALIGN_DISTRACTOR_RANK", False)) or bool(
-        getattr(cfg.TRAIN, "VDRM_LOG_DISTRACTOR_HARDNESS", False)
+    if (
+        bool(getattr(cfg.TRAIN, "VDRM_ALIGN_DISTRACTOR_RANK", False))
+        or bool(getattr(cfg.TRAIN, "VDRM_LOG_DISTRACTOR_HARDNESS", False))
+        or bool(
+            getattr(
+                cfg.TRAIN,
+                "VDRM_GROUP_BALANCE_DISTRACTOR_ROUTE",
+                False,
+            )
+        )
     ):
         # Exercise V5/V6 metadata paths without requiring local datasets. The
         # synthetic distractor box is disjoint from the labelled target.

@@ -104,6 +104,10 @@ cfg.TRAIN.VDRM_PART_ROUTE_WEIGHT = 0.0
 cfg.TRAIN.VDRM_PART_TARGET_DILATION = 1.0
 cfg.TRAIN.VDRM_RANK_MARGIN = 0.1
 cfg.TRAIN.VDRM_AUX_WARMUP_EPOCHS = 20
+# V17-only training switch. On applied HNCP samples, preserve V8's positive
+# route term while balancing the negative half equally between the pasted
+# same-class distractor and ordinary background. Inference is unchanged.
+cfg.TRAIN.VDRM_GROUP_BALANCE_DISTRACTOR_ROUTE = False
 # V5-only switch. When enabled, HNCP samples take the rank negative from the
 # pasted distractor box instead of an unrelated maximum over all background.
 cfg.TRAIN.VDRM_ALIGN_DISTRACTOR_RANK = False

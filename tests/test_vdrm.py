@@ -1771,6 +1771,170 @@ class VDRMTest(unittest.TestCase):
         self.assertIsNotNone(good_logits.grad)
         self.assertTrue(torch.isfinite(good_logits.grad).all())
 
+    def test_v17_no_hncp_is_bit_identical_to_v8_loss_and_gradient(self):
+        torch.manual_seed(73)
+        v8_logits = torch.randn(2, 4, 64, requires_grad=True)
+        v17_logits = v8_logits.detach().clone().requires_grad_()
+        global_index = torch.arange(64).unsqueeze(0).repeat(2, 1)
+        bbox = torch.tensor(
+            [[0.25, 0.25, 0.50, 0.50], [0.20, 0.30, 0.40, 0.35]]
+        )
+        part_valid = torch.tensor(
+            [[True, True, True, True], [True, False, True, True]]
+        )
+        part_weight = torch.tensor(
+            [[1.0, 0.8, 0.6, 0.4], [0.9, 0.0, 0.7, 0.5]]
+        )
+
+        v8_loss, _ = compute_vdrm_part_route_loss(
+            v8_logits,
+            global_index,
+            bbox,
+            grid_height=8,
+            grid_width=8,
+            part_valid=part_valid,
+            part_weight=part_weight,
+            dilation=1.0,
+        )
+        v17_loss, diagnostics = compute_vdrm_part_route_loss(
+            v17_logits,
+            global_index,
+            bbox,
+            grid_height=8,
+            grid_width=8,
+            part_valid=part_valid,
+            part_weight=part_weight,
+            dilation=1.0,
+            distractor_boxes=torch.tensor(
+                [[0.0, 0.0, 0.2, 0.2], [0.8, 0.8, 0.1, 0.1]]
+            ),
+            distractor_applied=torch.zeros(2),
+            group_balance_distractor=True,
+        )
+
+        self.assertTrue(torch.equal(v17_loss, v8_loss))
+        v8_loss.backward()
+        v17_loss.backward()
+        self.assertTrue(torch.equal(v17_logits.grad, v8_logits.grad))
+        self.assertEqual(
+            diagnostics["part_route_distractor_alignment_rate"].item(),
+            0.0,
+        )
+
+    def test_v17_group_balance_penalizes_distractor_and_keeps_background(self):
+        bbox = torch.tensor([[0.25, 0.25, 0.50, 0.50]])
+        global_index = torch.arange(64).unsqueeze(0)
+        low_logits = torch.zeros(1, 4, 64, requires_grad=True)
+        high_logits = low_logits.detach().clone()
+        high_logits[:, :, 0] = 3.0
+        high_logits.requires_grad_()
+        kwargs = {
+            "search_global_index": global_index,
+            "search_bbox": bbox,
+            "grid_height": 8,
+            "grid_width": 8,
+            "dilation": 0.0,
+            "distractor_boxes": torch.tensor(
+                [[0.0, 0.0, 0.125, 0.125]]
+            ),
+            "distractor_applied": torch.ones(1),
+            "group_balance_distractor": True,
+        }
+
+        low_loss, low_diagnostics = compute_vdrm_part_route_loss(
+            low_logits, **kwargs
+        )
+        high_loss, high_diagnostics = compute_vdrm_part_route_loss(
+            high_logits, **kwargs
+        )
+
+        self.assertGreater(high_loss.item(), low_loss.item())
+        self.assertGreater(
+            high_diagnostics[
+                "part_route_distractor_probability"
+            ].item(),
+            low_diagnostics[
+                "part_route_distractor_probability"
+            ].item(),
+        )
+        self.assertEqual(
+            high_diagnostics[
+                "part_route_distractor_alignment_rate"
+            ].item(),
+            1.0,
+        )
+        high_loss.backward()
+        self.assertGreater(high_logits.grad[0, 0, 0].item(), 0.0)
+        self.assertNotEqual(high_logits.grad[0, 0, 1].item(), 0.0)
+        self.assertTrue(torch.isfinite(high_logits.grad).all())
+
+    def test_v17_tiny_distractor_falls_back_to_nearest_legal_negative(self):
+        logits = torch.zeros(1, 4, 64, requires_grad=True)
+        loss, diagnostics = compute_vdrm_part_route_loss(
+            logits,
+            torch.arange(64).unsqueeze(0),
+            torch.tensor([[0.25, 0.25, 0.50, 0.50]]),
+            grid_height=8,
+            grid_width=8,
+            dilation=0.0,
+            distractor_boxes=torch.tensor(
+                [[0.001, 0.001, 0.01, 0.01]]
+            ),
+            distractor_applied=torch.ones(1),
+            group_balance_distractor=True,
+        )
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertEqual(
+            diagnostics[
+                "part_route_distractor_alignment_rate"
+            ].item(),
+            1.0,
+        )
+        self.assertGreater(
+            diagnostics[
+                "part_route_distractor_mass_fraction"
+            ].item(),
+            0.0,
+        )
+
+    def test_v17_missing_ordinary_group_falls_back_exactly_to_v8(self):
+        torch.manual_seed(79)
+        v8_logits = torch.randn(1, 4, 16, requires_grad=True)
+        v17_logits = v8_logits.detach().clone().requires_grad_()
+        args = (
+            torch.arange(16).unsqueeze(0),
+            torch.tensor([[0.25, 0.25, 0.50, 0.50]]),
+        )
+        v8_loss, _ = compute_vdrm_part_route_loss(
+            v8_logits,
+            *args,
+            grid_height=4,
+            grid_width=4,
+            dilation=0.0,
+        )
+        v17_loss, diagnostics = compute_vdrm_part_route_loss(
+            v17_logits,
+            *args,
+            grid_height=4,
+            grid_width=4,
+            dilation=0.0,
+            distractor_boxes=torch.tensor([[0.0, 0.0, 1.0, 1.0]]),
+            distractor_applied=torch.ones(1),
+            group_balance_distractor=True,
+        )
+
+        self.assertTrue(torch.equal(v17_loss, v8_loss))
+        v8_loss.backward()
+        v17_loss.backward()
+        self.assertTrue(torch.equal(v17_logits.grad, v8_logits.grad))
+        self.assertEqual(
+            diagnostics[
+                "part_route_distractor_alignment_rate"
+            ].item(),
+            0.0,
+        )
+
     def test_candidate_consensus_prefers_colocated_multi_part_evidence(self):
         module = VisibilityDrivenRepresentationModule(
             num_parts=4,

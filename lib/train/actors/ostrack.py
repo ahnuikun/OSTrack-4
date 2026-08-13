@@ -316,8 +316,19 @@ def compute_vdrm_part_route_loss(
     part_valid=None,
     part_weight=None,
     dilation=1.0,
+    distractor_boxes=None,
+    distractor_applied=None,
+    group_balance_distractor=False,
 ):
-    """Supervise V8 part routing with balanced soft region targets."""
+    """Supervise V8 part routing with balanced soft region targets.
+
+    V17 preserves V8 exactly unless ``group_balance_distractor`` is enabled
+    and a valid HNCP paste is present. For those parts, the negative half of
+    V8's loss is split equally between the known same-class distractor region
+    and all remaining background. This prevents a small pasted object from
+    being diluted by hundreds of easy background cells without changing the
+    positive term, the outer route-loss weight, or the inference path.
+    """
     if part_route_logits.ndim != 3:
         raise ValueError(
             "part_route_logits must have shape [B, K, L], got "
@@ -362,6 +373,165 @@ def compute_vdrm_part_route_loss(
     negative_loss = -(
         negative_target * F.logsigmoid(-part_route_logits)
     ).sum(dim=-1) / negative_mass.clamp_min(1e-6)
+    distractor_diagnostics = {}
+    if group_balance_distractor:
+        if distractor_boxes is None:
+            boxes = part_route_logits.new_zeros(batch_size, 4)
+        else:
+            boxes = distractor_boxes.to(
+                device=part_route_logits.device,
+                dtype=part_route_logits.dtype,
+            ).reshape(-1, 4)
+            if boxes.shape[0] != batch_size:
+                raise ValueError(
+                    "distractor_boxes batch size must match route logits, "
+                    f"got {boxes.shape[0]} and {batch_size}"
+                )
+        if distractor_applied is None:
+            applied = torch.zeros(
+                batch_size,
+                device=part_route_logits.device,
+                dtype=torch.bool,
+            )
+        else:
+            applied = distractor_applied.to(
+                device=part_route_logits.device, dtype=torch.bool
+            ).reshape(-1)
+            if applied.shape[0] != batch_size:
+                raise ValueError(
+                    "distractor_applied batch size must match route logits, "
+                    f"got {applied.shape[0]} and {batch_size}"
+                )
+
+        x0 = boxes[:, 0].clamp(0.0, 1.0)
+        y0 = boxes[:, 1].clamp(0.0, 1.0)
+        x1 = (boxes[:, 0] + boxes[:, 2]).clamp(0.0, 1.0)
+        y1 = (boxes[:, 1] + boxes[:, 3]).clamp(0.0, 1.0)
+        valid_box = (x1 > x0) & (y1 > y0)
+        requested = applied & valid_box
+
+        token_x = (
+            global_index.remainder(grid_width).to(part_route_logits.dtype)
+            + 0.5
+        ) / grid_width
+        token_y = (
+            global_index.div(
+                grid_width, rounding_mode="floor"
+            ).to(part_route_logits.dtype)
+            + 0.5
+        ) / grid_height
+        inside_box = (
+            (token_x >= x0[:, None])
+            & (token_x < x1[:, None])
+            & (token_y >= y0[:, None])
+            & (token_y < y1[:, None])
+            & requested[:, None]
+        )
+        distractor_selection = (
+            inside_box[:, None, :]
+            & negative_target.gt(0.0)
+        )
+
+        # A small paste can fall between grid centers, and CE can remove every
+        # in-box token. Select the nearest retained negative separately for
+        # each target part. If no legal negative remains, that part falls back
+        # to the exact V8 loss instead of receiving a false label.
+        missing_group = ~distractor_selection.any(dim=-1)
+        center_x = (0.5 * (x0 + x1))[:, None]
+        center_y = (0.5 * (y0 + y1))[:, None]
+        squared_distance = (
+            (token_x - center_x).square()
+            + (token_y - center_y).square()
+        )
+        candidate_distance = squared_distance[:, None, :].expand(
+            -1, num_parts, -1
+        ).masked_fill(negative_target.le(0.0), torch.inf)
+        nearest_distance, nearest_index = candidate_distance.min(dim=-1)
+        has_fallback = torch.isfinite(nearest_distance)
+        fallback_selection = torch.zeros_like(distractor_selection)
+        fallback_selection.scatter_(
+            2, nearest_index.unsqueeze(-1), True
+        )
+        use_fallback = (
+            requested[:, None] & missing_group & has_fallback
+        )
+        distractor_selection = distractor_selection | (
+            fallback_selection & use_fallback.unsqueeze(-1)
+        )
+
+        distractor_weight = (
+            negative_target
+            * distractor_selection.to(negative_target.dtype)
+        )
+        ordinary_weight = (
+            negative_target
+            * (~distractor_selection).to(negative_target.dtype)
+        )
+        distractor_mass = distractor_weight.sum(dim=-1)
+        ordinary_mass = ordinary_weight.sum(dim=-1)
+        use_group_balance = (
+            requested[:, None]
+            & distractor_mass.gt(0.0)
+            & ordinary_mass.gt(0.0)
+        )
+
+        negative_element = -F.logsigmoid(-part_route_logits)
+        distractor_loss = (
+            distractor_weight * negative_element
+        ).sum(dim=-1) / distractor_mass.clamp_min(1e-6)
+        ordinary_loss = (
+            ordinary_weight * negative_element
+        ).sum(dim=-1) / ordinary_mass.clamp_min(1e-6)
+        grouped_negative_loss = 0.5 * (
+            distractor_loss + ordinary_loss
+        )
+        negative_loss = torch.where(
+            use_group_balance, grouped_negative_loss, negative_loss
+        )
+
+        diagnostic_valid = use_group_balance
+        if part_valid is not None:
+            diagnostic_valid = diagnostic_valid & part_valid.to(
+                device=diagnostic_valid.device, dtype=torch.bool
+            )
+        diagnostic_float = diagnostic_valid.to(part_route_logits.dtype)
+        diagnostic_count = diagnostic_float.sum().clamp_min(1.0)
+        probability = torch.sigmoid(part_route_logits)
+        distractor_probability = (
+            probability
+            * distractor_weight
+            * diagnostic_float.unsqueeze(-1)
+        ).sum() / (
+            distractor_weight * diagnostic_float.unsqueeze(-1)
+        ).sum().clamp_min(1e-6)
+        ordinary_probability = (
+            probability
+            * ordinary_weight
+            * diagnostic_float.unsqueeze(-1)
+        ).sum() / (
+            ordinary_weight * diagnostic_float.unsqueeze(-1)
+        ).sum().clamp_min(1e-6)
+        requested_valid = requested[:, None].expand(-1, num_parts)
+        if part_valid is not None:
+            requested_valid = requested_valid & part_valid.to(
+                device=requested_valid.device, dtype=torch.bool
+            )
+        alignment_rate = (
+            diagnostic_valid.to(part_route_logits.dtype).sum()
+            / requested_valid.to(part_route_logits.dtype).sum().clamp_min(1.0)
+        )
+        mass_fraction = (
+            (distractor_mass / negative_mass.clamp_min(1e-6))
+            * diagnostic_float
+        ).sum() / diagnostic_count
+        distractor_diagnostics = {
+            "part_route_distractor_probability": distractor_probability,
+            "part_route_ordinary_background_probability": (
+                ordinary_probability
+            ),
+            "part_route_distractor_alignment_rate": alignment_rate,
+            "part_route_distractor_mass_fraction": mass_fraction,
+        }
     per_part_loss = 0.5 * (positive_loss + negative_loss)
 
     valid_weight = (
@@ -405,6 +575,7 @@ def compute_vdrm_part_route_loss(
         "part_route_positive_probability": positive_probability,
         "part_route_background_probability": background_probability,
     }
+    diagnostics.update(distractor_diagnostics)
     return loss, diagnostics
 
 
@@ -786,6 +957,13 @@ class OSTrackActor(BaseActor):
             spatial_gate_mode = getattr(
                 vdrm_cfg, 'SPATIAL_GATE_MODE', 'token_match'
             )
+            group_balance_distractor_route = bool(
+                getattr(
+                    self.cfg.TRAIN,
+                    'VDRM_GROUP_BALANCE_DISTRACTOR_ROUTE',
+                    False,
+                )
+            )
             if spatial_gate_mode in (
                 'candidate_consensus',
                 'part_aligned_consensus',
@@ -845,6 +1023,15 @@ class OSTrackActor(BaseActor):
                             self.cfg.TRAIN,
                             'VDRM_PART_TARGET_DILATION',
                             1.0,
+                        ),
+                        distractor_boxes=gt_dict.get(
+                            'vdrm_distractor_box'
+                        ),
+                        distractor_applied=gt_dict.get(
+                            'vdrm_distractor_applied'
+                        ),
+                        group_balance_distractor=(
+                            group_balance_distractor_route
                         ),
                     )
                 )
@@ -930,6 +1117,32 @@ class OSTrackActor(BaseActor):
                             ].detach().item()
                         ),
                     })
+                    if (
+                        'part_route_distractor_probability'
+                        in part_route_diagnostics
+                    ):
+                        status.update({
+                            "VDRM/part_route_distractor_probability": (
+                                part_route_diagnostics[
+                                    'part_route_distractor_probability'
+                                ].detach().item()
+                            ),
+                            "VDRM/part_route_ordinary_background_probability": (
+                                part_route_diagnostics[
+                                    'part_route_ordinary_background_probability'
+                                ].detach().item()
+                            ),
+                            "VDRM/part_route_distractor_alignment_rate": (
+                                part_route_diagnostics[
+                                    'part_route_distractor_alignment_rate'
+                                ].detach().item()
+                            ),
+                            "VDRM/part_route_distractor_mass_fraction": (
+                                part_route_diagnostics[
+                                    'part_route_distractor_mass_fraction'
+                                ].detach().item()
+                            ),
+                        })
                 if 'part_route_residual_retention_mean' in pred_dict:
                     status.update({
                         "VDRM/part_route_residual_retention_mean": (

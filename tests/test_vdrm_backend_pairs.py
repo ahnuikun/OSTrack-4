@@ -164,6 +164,22 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         self.assertEqual(v16.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
         self.assertEqual(v16.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
 
+    def test_v17_hncp_group_balanced_route_config_is_registered(self):
+        _, _, v17 = load_config(
+            "vitb_256_mae_ce_vdrm_v17_hgbr_hncp_32x4_ep300"
+        )
+
+        self.assertTrue(v17.MODEL.VDRM.ENABLED)
+        self.assertEqual(v17.MODEL.VDRM.SPATIAL_GATE_MODE, "part_aligned")
+        self.assertEqual(v17.MODEL.VDRM.RESIDUAL_MAX_RATIO, 0.0)
+        self.assertEqual(v17.MODEL.VDRM.ALPHA_MAX, 1.5)
+        self.assertEqual(v17.MODEL.PRETRAIN_FILE, "mae_pretrain_vit_base.pth")
+        self.assertTrue(v17.TRAIN.VDRM_GROUP_BALANCE_DISTRACTOR_ROUTE)
+        self.assertFalse(v17.TRAIN.VDRM_ALIGN_DISTRACTOR_RANK)
+        self.assertFalse(v17.TRAIN.VDRM_LOG_DISTRACTOR_HARDNESS)
+        self.assertEqual(v17.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
+        self.assertEqual(v17.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
+
     def test_map_box_back_uses_the_shared_anchor(self):
         mapped = map_box_back_from_anchor(
             predicted_box=[50.0, 50.0, 20.0, 10.0],
