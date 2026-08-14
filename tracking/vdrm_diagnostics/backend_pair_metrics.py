@@ -51,6 +51,12 @@ ROUTE_SAFEGUARD_METRICS = (
     "part_reliability_suppressed_fraction",
     "part_reliability_suppression_mean",
 )
+PROTOTYPE_METRICS = (
+    "prototype_weight_entropy",
+    "prototype_effective_token_fraction",
+    "prototype_cosine_to_uniform",
+    "prototype_max_weight",
+)
 
 
 def valid_box(box: Sequence[float]) -> bool:
@@ -432,6 +438,10 @@ def summarize_pair_rows(
         metric: continuous_metric_summary(valid_rows, metric)
         for metric in ROUTE_SAFEGUARD_METRICS
     }
+    prototype = {
+        metric: continuous_metric_summary(valid_rows, metric)
+        for metric in PROTOTYPE_METRICS
+    }
     summary = {
         "frame_count": len(rows),
         "valid_gt_frames": len(valid_rows),
@@ -496,11 +506,14 @@ def summarize_pair_rows(
         "residual": residual,
         "candidate_guidance": candidate_guidance,
         "route_safeguard": route_safeguard,
+        "prototype": prototype,
     }
     for metric, metric_summary in residual.items():
         summary[f"mean_{metric}"] = metric_summary["mean"]
     for metric, metric_summary in candidate_guidance.items():
         summary[f"mean_{metric}"] = metric_summary["mean"]
     for metric, metric_summary in route_safeguard.items():
+        summary[f"mean_{metric}"] = metric_summary["mean"]
+    for metric, metric_summary in prototype.items():
         summary[f"mean_{metric}"] = metric_summary["mean"]
     return summary

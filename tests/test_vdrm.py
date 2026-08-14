@@ -452,6 +452,218 @@ class VDRMTest(unittest.TestCase):
             1e-6,
         )
 
+    def test_v18_coherent_weights_are_positive_normalized_and_detached(self):
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=1,
+            candidate_consensus_parts=1,
+            spatial_gate_mode="part_aligned_coherent_prototype",
+            alpha_max=1.5,
+        )
+        template_tokens = torch.tensor(
+            [[[1.0, 0.0], [1.0, 0.0], [-1.0, 0.0]]],
+            requires_grad=True,
+        )
+        part_masks = torch.ones(1, 1, 3)
+        part_valid = torch.ones(1, 1, dtype=torch.bool)
+
+        prototypes, weights, diagnostics = (
+            module._identity_coherent_part_prototypes(
+                template_tokens, part_masks, part_valid
+            )
+        )
+
+        self.assertFalse(weights.requires_grad)
+        for value in diagnostics.values():
+            self.assertFalse(value.requires_grad)
+        self.assertTrue((weights > 0.0).all().item())
+        self.assertTrue(
+            torch.equal(weights.sum(dim=-1), torch.ones(1, 1))
+        )
+        self.assertLess(weights[0, 0, 2].item(), weights[0, 0, 0].item())
+        self.assertEqual(
+            weights[0, 0, 0].item(), weights[0, 0, 1].item()
+        )
+
+        prototypes.sum().backward()
+        expected_gradient = weights.squeeze(1).unsqueeze(-1).expand_as(
+            template_tokens
+        )
+        self.assertTrue(
+            torch.equal(template_tokens.grad, expected_gradient)
+        )
+        for value in diagnostics.values():
+            self.assertTrue(torch.isfinite(value).all())
+
+    def test_v18_uniform_and_single_token_parts_are_exact_v8_means(self):
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=1,
+            candidate_consensus_parts=1,
+            spatial_gate_mode="part_aligned_coherent_prototype",
+            alpha_max=1.5,
+        )
+        repeated = torch.tensor(
+            [[[2.0, -1.0, 0.5]] * 4]
+        )
+        repeated_mask = torch.ones(1, 1, 4)
+        valid = torch.ones(1, 1, dtype=torch.bool)
+        repeated_prototype, repeated_weight, diagnostics = (
+            module._identity_coherent_part_prototypes(
+                repeated, repeated_mask, valid
+            )
+        )
+        v8_repeated = repeated.mean(dim=1, keepdim=True)
+
+        self.assertTrue(torch.equal(repeated_prototype, v8_repeated))
+        self.assertTrue(
+            torch.equal(
+                repeated_weight,
+                torch.full_like(repeated_weight, 0.25),
+            )
+        )
+        self.assertEqual(
+            diagnostics["prototype_weight_entropy"].item(), 1.0
+        )
+        self.assertEqual(
+            diagnostics["prototype_effective_token_fraction"].item(),
+            1.0,
+        )
+
+        singleton = torch.tensor([[[0.5, -2.0, 3.0]]])
+        singleton_prototype, singleton_weight, _ = (
+            module._identity_coherent_part_prototypes(
+                singleton,
+                torch.ones(1, 1, 1),
+                valid,
+            )
+        )
+        self.assertTrue(torch.equal(singleton_prototype, singleton))
+        self.assertTrue(
+            torch.equal(singleton_weight, torch.ones_like(singleton_weight))
+        )
+
+    def test_v18_invalid_part_is_zero_and_finite(self):
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=1,
+            candidate_consensus_parts=1,
+            spatial_gate_mode="part_aligned_coherent_prototype",
+            alpha_max=1.5,
+        )
+        prototype, weight, diagnostics = (
+            module._identity_coherent_part_prototypes(
+                torch.randn(1, 3, 4),
+                torch.zeros(1, 1, 3),
+                torch.zeros(1, 1, dtype=torch.bool),
+            )
+        )
+
+        self.assertTrue(torch.equal(prototype, torch.zeros_like(prototype)))
+        self.assertTrue(torch.equal(weight, torch.zeros_like(weight)))
+        for value in diagnostics.values():
+            self.assertTrue(torch.equal(value, torch.zeros_like(value)))
+
+    def test_v18_uniform_forward_is_bit_identical_to_v8(self):
+        torch.manual_seed(83)
+        v8 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+        )
+        v18 = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_coherent_prototype",
+            alpha_max=1.5,
+        )
+        v18.load_state_dict(v8.state_dict(), strict=True)
+        self.assertEqual(tuple(v18.state_dict()), tuple(v8.state_dict()))
+        v8.alpha.data.fill_(-0.75)
+        v18.alpha.data.copy_(v8.alpha.data)
+
+        template = torch.empty(1, 8, 8, 8)
+        part_values = torch.tensor(
+            [
+                [1.0, 0.0, 0.5, -0.5, 0.2, 0.3, -0.2, 0.7],
+                [0.0, 1.0, -0.5, 0.5, 0.4, -0.3, 0.6, 0.1],
+                [0.5, -0.5, 1.0, 0.0, -0.2, 0.7, 0.3, 0.4],
+                [-0.5, 0.5, 0.0, 1.0, 0.6, 0.2, 0.1, -0.4],
+            ]
+        )
+        template[:, :4, :4] = part_values[0]
+        template[:, :4, 4:] = part_values[1]
+        template[:, 4:, :4] = part_values[2]
+        template[:, 4:, 4:] = part_values[3]
+        tokens = torch.cat(
+            (template.reshape(1, 64, 8), torch.randn(1, 36, 8)),
+            dim=1,
+        )
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": torch.tensor([[0.0, 0.0, 1.0, 1.0]]),
+            "search_global_index": torch.arange(36).unsqueeze(0),
+            "search_grid_size": 6,
+        }
+
+        v8_output, _ = v8(tokens, **kwargs)
+        v18_output, diagnostics = v18(tokens, **kwargs)
+
+        self.assertTrue(torch.equal(v18_output, v8_output))
+        self.assertTrue(
+            torch.equal(
+                diagnostics["prototype_weight_entropy"],
+                torch.ones(1),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                diagnostics["prototype_effective_token_fraction"],
+                torch.ones(1),
+            )
+        )
+        self.assertEqual(diagnostics["prototype_max_weight"].item(), 1 / 16)
+
+    def test_v18_forward_has_finite_gradients_and_zero_alpha_identity(self):
+        torch.manual_seed(89)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            spatial_gate_mode="part_aligned_coherent_prototype",
+            alpha_max=1.5,
+        )
+        tokens = torch.randn(2, 64 + 31, 24, requires_grad=True)
+        kwargs = {
+            "template_length": 64,
+            "template_bbox": torch.tensor(
+                [[0.25, 0.25, 0.50, 0.50]] * 2
+            ),
+            "search_global_index": torch.arange(31).unsqueeze(0).repeat(2, 1),
+            "search_grid_size": 6,
+        }
+
+        identity_output, identity_diagnostics = module(tokens, **kwargs)
+        self.assertTrue(torch.equal(identity_output, tokens))
+        for name in (
+            "prototype_weight_entropy",
+            "prototype_effective_token_fraction",
+            "prototype_cosine_to_uniform",
+            "prototype_max_weight",
+        ):
+            self.assertTrue(torch.isfinite(identity_diagnostics[name]).all())
+
+        module.alpha.data.fill_(-1.0)
+        output, diagnostics = module(tokens, **kwargs)
+        output[:, 64:].square().mean().backward()
+
+        self.assertTrue(torch.isfinite(tokens.grad).all())
+        for parameter in module.parameters():
+            self.assertIsNotNone(parameter.grad)
+            self.assertTrue(torch.isfinite(parameter.grad).all())
+        self.assertTrue(
+            (
+                diagnostics["prototype_effective_token_fraction"] > 0.0
+            ).all().item()
+        )
+        self.assertTrue(
+            (diagnostics["prototype_max_weight"] < 1.0).all().item()
+        )
+
     def test_default_mode_preserves_pre_v7_state_dict_schema(self):
         module = VisibilityDrivenRepresentationModule(num_parts=4, topk=4)
 

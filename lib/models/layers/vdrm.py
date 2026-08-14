@@ -45,6 +45,11 @@ The first implementation intentionally keeps the design small:
   redistributes that mass among template parts using bidirectional part-token
   evidence. It changes identity assignment without a new gate, parameter,
   loss, threshold, or residual-magnitude control.
+* VDRM-v18 returns to V8's complete route and residual path, but replaces the
+  uniform template-part mean with a detached identity-coherence weighting.
+  Every in-part token remains active, while tokens that agree with the V8
+  uniform prototype contribute more strongly to the prototype used for both
+  matching and residual injection.
 
 The original ``topk`` reliability is retained for VDRM-v1 checkpoint
 compatibility. VDRM-v2 uses the margin between a part's best match and its
@@ -118,6 +123,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_reliability_safe",
             "part_aligned_identity_aux",
             "part_aligned_bidirectional",
+            "part_aligned_coherent_prototype",
         ):
             raise ValueError(
                 "spatial_gate_mode must be 'token_match', "
@@ -128,6 +134,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 "'part_aligned_reliability_safe', or "
                 "'part_aligned_identity_aux', "
                 "'part_aligned_bidirectional', "
+                "'part_aligned_coherent_prototype', "
                 f"got {spatial_gate_mode!r}"
             )
         if candidate_local_radius < 0:
@@ -208,7 +215,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             self.register_parameter("candidate_log_match_scale", None)
             self.register_parameter("candidate_match_bias", None)
 
-        # V8-V16 calibrate each part-to-token similarity independently. These
+        # V8-V18 calibrate each part-to-token similarity independently. These
         # parameters remain absent from every earlier forward path.
         if self.spatial_gate_mode in (
             "part_aligned",
@@ -219,6 +226,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_reliability_safe",
             "part_aligned_identity_aux",
             "part_aligned_bidirectional",
+            "part_aligned_coherent_prototype",
         ):
             initial_part_route_scale = torch.tensor(
                 float(part_route_initial_match_scale)
@@ -678,6 +686,136 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             [0.25, 0.25, 0.5, 0.5], device=device, dtype=dtype
         ).expand(batch_size, -1)
 
+    def _identity_coherent_part_prototypes(
+        self,
+        template_tokens: torch.Tensor,
+        part_masks: torch.Tensor,
+        part_valid: torch.Tensor,
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]
+    ]:
+        """Refine V8 part means using detached within-part coherence.
+
+        The V8 uniform prototype is used only as a read-only identity anchor.
+        Cosine scores and their softmax weights are detached, preventing the
+        backbone from learning to manipulate the selector. Gradients still
+        reach every template token through its strictly positive weighted
+        contribution to the refined prototype.
+        """
+        if template_tokens.ndim != 3:
+            raise ValueError(
+                "template_tokens must have shape [B, L, C], got "
+                f"{tuple(template_tokens.shape)}"
+            )
+        expected_mask_shape = (
+            template_tokens.shape[0],
+            self.num_parts,
+            template_tokens.shape[1],
+        )
+        if part_masks.shape != expected_mask_shape:
+            raise ValueError(
+                "part_masks must have shape [B, K, L], got "
+                f"{tuple(part_masks.shape)} instead of "
+                f"{expected_mask_shape}"
+            )
+        if part_valid.shape != expected_mask_shape[:2]:
+            raise ValueError(
+                "part_valid must have shape [B, K], got "
+                f"{tuple(part_valid.shape)}"
+            )
+
+        mask_float = part_masks.to(
+            device=template_tokens.device, dtype=template_tokens.dtype
+        )
+        mask_bool = mask_float.gt(0.0)
+        valid = part_valid.to(
+            device=template_tokens.device, dtype=torch.bool
+        )
+        part_count = mask_float.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        uniform_prototypes = torch.einsum(
+            "bkl,blc->bkc", mask_float, template_tokens.detach()
+        ) / part_count
+        uniform_prototypes = uniform_prototypes * valid.unsqueeze(-1).to(
+            uniform_prototypes.dtype
+        )
+
+        detached_tokens = F.normalize(
+            template_tokens.detach(), dim=-1, eps=self.eps
+        )
+        detached_uniform = F.normalize(
+            uniform_prototypes, dim=-1, eps=self.eps
+        )
+        coherence = torch.einsum(
+            "bkc,blc->bkl", detached_uniform, detached_tokens
+        )
+        very_negative = torch.finfo(coherence.dtype).min
+        coherence = coherence.masked_fill(~mask_bool, very_negative)
+        weights = F.softmax(coherence, dim=-1) * mask_float
+        weights = torch.where(
+            valid.unsqueeze(-1),
+            weights / weights.sum(dim=-1, keepdim=True).clamp_min(self.eps),
+            torch.zeros_like(weights),
+        ).detach()
+
+        prototypes = torch.einsum(
+            "bkl,blc->bkc", weights, template_tokens
+        )
+        prototypes = prototypes * valid.unsqueeze(-1).to(prototypes.dtype)
+
+        token_count = mask_float.sum(dim=-1)
+        weight_entropy = -(
+            weights * weights.clamp_min(self.eps).log()
+        ).sum(dim=-1)
+        normalized_entropy = torch.where(
+            token_count > 1.0,
+            weight_entropy / token_count.clamp_min(2.0).log(),
+            torch.ones_like(weight_entropy),
+        )
+        effective_token_fraction = 1.0 / (
+            token_count.clamp_min(1.0)
+            * weights.square().sum(dim=-1).clamp_min(self.eps)
+        )
+        effective_token_fraction = torch.where(
+            valid,
+            effective_token_fraction,
+            torch.zeros_like(effective_token_fraction),
+        )
+        cosine_to_uniform = F.cosine_similarity(
+            prototypes.detach(), uniform_prototypes, dim=-1, eps=self.eps
+        )
+        max_weight = weights.amax(dim=-1)
+
+        valid_float = valid.to(template_tokens.dtype)
+        valid_count = valid_float.sum(dim=-1).clamp_min(1.0)
+
+        def valid_mean(value: torch.Tensor) -> torch.Tensor:
+            return (value * valid_float).sum(dim=-1) / valid_count
+
+        has_valid = valid.any(dim=-1)
+        diagnostics = {
+            "prototype_weight_entropy": torch.where(
+                has_valid,
+                valid_mean(normalized_entropy),
+                torch.zeros_like(valid_count),
+            ),
+            "prototype_effective_token_fraction": torch.where(
+                has_valid,
+                valid_mean(effective_token_fraction),
+                torch.zeros_like(valid_count),
+            ),
+            "prototype_cosine_to_uniform": torch.where(
+                has_valid,
+                valid_mean(cosine_to_uniform),
+                torch.zeros_like(valid_count),
+            ),
+            "prototype_max_weight": torch.where(
+                has_valid,
+                max_weight.masked_fill(~valid, 0.0).amax(dim=-1),
+                torch.zeros_like(valid_count),
+            ),
+        }
+        return prototypes, weights, diagnostics
+
     def _build_part_masks(
         self,
         template_bbox: torch.Tensor,
@@ -775,6 +913,15 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "bkl,blc->bkc", part_masks, template_tokens
         ) / part_count
         prototypes = prototypes * part_valid.unsqueeze(-1).to(prototypes.dtype)
+        prototype_diagnostics = {}
+        if self.spatial_gate_mode == "part_aligned_coherent_prototype":
+            prototypes, _, prototype_diagnostics = (
+                self._identity_coherent_part_prototypes(
+                    template_tokens,
+                    part_masks,
+                    part_valid,
+                )
+            )
 
         normalized_prototypes = F.normalize(prototypes, dim=-1, eps=self.eps)
         normalized_search = F.normalize(search_tokens, dim=-1, eps=self.eps)
@@ -828,6 +975,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_reliability_safe",
             "part_aligned_identity_aux",
             "part_aligned_bidirectional",
+            "part_aligned_coherent_prototype",
         ):
             (
                 part_route_logits,
@@ -1120,9 +1268,10 @@ class VisibilityDrivenRepresentationModule(nn.Module):
             "part_aligned_positive_preserved",
             "part_aligned_reliability_safe",
             "part_aligned_bidirectional",
+            "part_aligned_coherent_prototype",
         ):
             # Measure before LayerScale so zero initialization cannot hide a
-            # collapsed routing map during early V8-V16 training.
+            # collapsed routing map during early V8-V18 training.
             residual_energy = residual.square().sum(dim=-1)
             residual_energy_sum = residual_energy.sum(dim=1).clamp_min(
                 self.eps
@@ -1183,4 +1332,5 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         diagnostics.update(candidate_diagnostics)
         diagnostics.update(route_diagnostics)
         diagnostics.update(residual_concentration_diagnostics)
+        diagnostics.update(prototype_diagnostics)
         return output_tokens, diagnostics

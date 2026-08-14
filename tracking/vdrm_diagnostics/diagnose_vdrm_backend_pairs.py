@@ -361,6 +361,10 @@ class BackendRunner:
             "part_assignment_total_variation",
             "part_assignment_entropy",
             "part_assignment_mass_error_max",
+            "prototype_weight_entropy",
+            "prototype_effective_token_fraction",
+            "prototype_cosine_to_uniform",
+            "prototype_max_weight",
             "vdrm_alpha",
             "vdrm_residual_clip_rate",
             "vdrm_residual_clip_scale_mean",
@@ -684,7 +688,11 @@ def build_pair_row(
             row[f"{prefix}_{name}"] = metrics[name]
 
     for name, value in vdrm_output.items():
-        if name.startswith("residual_") or name.startswith("vdrm_"):
+        if (
+            name.startswith("residual_")
+            or name.startswith("vdrm_")
+            or name.startswith("prototype_")
+        ):
             row[name] = value
     part_values = {
         name: vdrm_output.get(name)

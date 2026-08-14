@@ -996,6 +996,7 @@ class OSTrackActor(BaseActor):
                 'part_aligned_reliability_safe',
                 'part_aligned_identity_aux',
                 'part_aligned_bidirectional',
+                'part_aligned_coherent_prototype',
             ):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
@@ -1235,6 +1236,29 @@ class OSTrackActor(BaseActor):
                         "VDRM/part_assignment_mass_error_max": (
                             pred_dict[
                                 'part_assignment_mass_error_max'
+                            ].detach().max().item()
+                        ),
+                    })
+                if 'prototype_weight_entropy' in pred_dict:
+                    status.update({
+                        "VDRM/prototype_weight_entropy": (
+                            pred_dict[
+                                'prototype_weight_entropy'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/prototype_effective_token_fraction": (
+                            pred_dict[
+                                'prototype_effective_token_fraction'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/prototype_cosine_to_uniform": (
+                            pred_dict[
+                                'prototype_cosine_to_uniform'
+                            ].detach().mean().item()
+                        ),
+                        "VDRM/prototype_max_weight": (
+                            pred_dict[
+                                'prototype_max_weight'
                             ].detach().max().item()
                         ),
                     })

@@ -180,6 +180,25 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         self.assertEqual(v17.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
         self.assertEqual(v17.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
 
+    def test_v18_identity_coherent_prototype_config_is_registered(self):
+        _, _, v18 = load_config(
+            "vitb_256_mae_ce_vdrm_v18_icpr_hncp_32x4_ep300"
+        )
+
+        self.assertTrue(v18.MODEL.VDRM.ENABLED)
+        self.assertEqual(
+            v18.MODEL.VDRM.SPATIAL_GATE_MODE,
+            "part_aligned_coherent_prototype",
+        )
+        self.assertEqual(v18.MODEL.VDRM.RESIDUAL_MAX_RATIO, 0.0)
+        self.assertEqual(v18.MODEL.VDRM.ALPHA_MAX, 1.5)
+        self.assertEqual(v18.MODEL.PRETRAIN_FILE, "mae_pretrain_vit_base.pth")
+        self.assertFalse(v18.TRAIN.VDRM_GROUP_BALANCE_DISTRACTOR_ROUTE)
+        self.assertFalse(v18.TRAIN.VDRM_ALIGN_DISTRACTOR_RANK)
+        self.assertFalse(v18.TRAIN.VDRM_LOG_DISTRACTOR_HARDNESS)
+        self.assertEqual(v18.TRAIN.VDRM_CANDIDATE_WEIGHT, 0.0)
+        self.assertEqual(v18.TRAIN.VDRM_PART_ROUTE_WEIGHT, 0.1)
+
     def test_map_box_back_uses_the_shared_anchor(self):
         mapped = map_box_back_from_anchor(
             predicted_box=[50.0, 50.0, 20.0, 10.0],
@@ -291,6 +310,10 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
                     "part_reliability_safety_factor_max": 1.0,
                     "part_reliability_suppressed_fraction": 0.5,
                     "part_reliability_suppression_mean": 0.2,
+                    "prototype_weight_entropy": 0.95,
+                    "prototype_effective_token_fraction": 0.9,
+                    "prototype_cosine_to_uniform": 0.98,
+                    "prototype_max_weight": 0.4,
                     "visual_reliability": reliability,
                     "vdrm_response_reliability": reliability,
                     "combined_reliability": reliability,
@@ -334,6 +357,15 @@ class VDRMBackendPairMetricsTest(unittest.TestCase):
         self.assertEqual(
             summary["mean_part_assignment_mass_error_max"], 1e-7
         )
+        self.assertEqual(
+            summary["prototype"]["prototype_weight_entropy"]["mean"],
+            0.95,
+        )
+        self.assertEqual(
+            summary["mean_prototype_effective_token_fraction"], 0.9
+        )
+        self.assertEqual(summary["mean_prototype_cosine_to_uniform"], 0.98)
+        self.assertEqual(summary["mean_prototype_max_weight"], 0.4)
         self.assertEqual(
             summary["candidate_guidance"]["candidate_modulation"]["mean"],
             0.2,
