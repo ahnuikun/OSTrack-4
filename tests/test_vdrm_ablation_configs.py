@@ -1,10 +1,13 @@
 import copy
 import inspect
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lib.config.ostrack.config import cfg, update_config_from_file
 from lib.test.evaluation.simple_sotdataset import VisDroneSOTDataset
+from tracking import train as training_launcher
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +111,32 @@ class VDRMAblationConfigTest(unittest.TestCase):
         )
         a8 = load_config(ABLATION_CONFIGS["a8"])
         self.assertEqual(to_plain_dict(a8), to_plain_dict(released_v8))
+
+    def test_training_launcher_forwards_the_registered_seed(self):
+        argv = [
+            "tracking/train.py",
+            "--script", "ostrack",
+            "--config", ABLATION_CONFIGS["a1"].removesuffix(".yaml"),
+            "--save_dir", "./output",
+            "--mode", "multiple",
+            "--nproc_per_node", "4",
+            "--seed", "123",
+            "--use_lmdb", "0",
+            "--use_wandb", "0",
+        ]
+        with patch.object(sys, "argv", argv), patch.object(
+            training_launcher.random, "randint", return_value=29500
+        ), patch.object(training_launcher.os, "system") as run_command:
+            training_launcher.main()
+
+        command = run_command.call_args.args[0]
+        self.assertIn("torchrun --standalone --nproc_per_node 4", command)
+        self.assertIn("--master_port 29500", command)
+        self.assertIn("--seed 123", command)
+        self.assertIn(
+            "--config vitb_256_mae_ce_vdrm_v8_a1_structure_32x4_ep300",
+            command,
+        )
 
 
 if __name__ == "__main__":

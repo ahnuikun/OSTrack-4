@@ -4,7 +4,8 @@ Run every command from the repository root. Complete training, checkpoint
 validation, four-dataset testing, and analysis for one ablation before starting
 the next ablation. Do not launch A1-A8 as one training loop.
 
-All experiments use four GPUs, seed 42, and the same output root. The unique
+All experiments use the same `tracking/train.py` launcher as the earlier VDRM
+runs, four visible GPUs, seed 42, and the same output root. The unique
 configuration name keeps checkpoints and results isolated.
 
 ## Dataset and environment preflight
@@ -38,11 +39,12 @@ python -m unittest discover -s tests -v
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a1_structure_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -57,11 +59,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a1_structure_32
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a1_structure_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -69,10 +70,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a1_structure_32x4_ep300 \
   --dataset all \
-  --display_name A1 \
   --force_evaluation
 ```
 
@@ -83,11 +82,12 @@ Stop and review A1 before starting A2.
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a2_rank_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -102,11 +102,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a2_rank_32x4_ep
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a2_rank_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -114,10 +113,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a2_rank_32x4_ep300 \
   --dataset all \
-  --display_name A2 \
   --force_evaluation
 ```
 
@@ -128,11 +125,12 @@ Stop and review A2 before starting A3.
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a3_route_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -147,11 +145,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a3_route_32x4_e
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a3_route_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -159,10 +156,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a3_route_32x4_ep300 \
   --dataset all \
-  --display_name A3 \
   --force_evaluation
 ```
 
@@ -173,11 +168,12 @@ Stop and review A3 before starting A4.
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a4_rank_route_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -192,11 +188,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a4_rank_route_3
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a4_rank_route_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -204,10 +199,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a4_rank_route_32x4_ep300 \
   --dataset all \
-  --display_name A4 \
   --force_evaluation
 ```
 
@@ -218,11 +211,12 @@ Stop and review A4 before starting A5.
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a5_occlusion_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -237,11 +231,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a5_occlusion_32
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a5_occlusion_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -249,10 +242,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a5_occlusion_32x4_ep300 \
   --dataset all \
-  --display_name A5 \
   --force_evaluation
 ```
 
@@ -263,11 +254,12 @@ Stop and review A5 before starting A6.
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a6_route_visibility_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -282,11 +274,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a6_route_visibi
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a6_route_visibility_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -294,10 +285,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a6_route_visibility_32x4_ep300 \
   --dataset all \
-  --display_name A6 \
   --force_evaluation
 ```
 
@@ -308,11 +297,12 @@ Stop and review A6 before starting A7.
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a7_visibility_loss_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -327,11 +317,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a7_visibility_l
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a7_visibility_loss_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -339,10 +328,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a7_visibility_loss_32x4_ep300 \
   --dataset all \
-  --display_name A7 \
   --force_evaluation
 ```
 
@@ -353,11 +340,12 @@ Stop and review A7 before starting A8.
 Train:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 --master_port=29500 \
-  lib/train/run_training.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --script ostrack \
   --config vitb_256_mae_ce_vdrm_v8_a8_full_32x4_ep300 \
   --save_dir ./output \
+  --mode multiple \
+  --nproc_per_node 4 \
   --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
@@ -372,11 +360,10 @@ test -f output/checkpoints/train/ostrack/vitb_256_mae_ce_vdrm_v8_a8_full_32x4_ep
 Test the four datasets:
 
 ```bash
-python tracking/test_uav_suite.py \
-  --tracker_name ostrack \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/test_uav_suite.py \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a8_full_32x4_ep300 \
   --dataset all \
-  --threads 16 \
+  --threads 4 \
   --num_gpus 4
 ```
 
@@ -384,10 +371,8 @@ Analyze:
 
 ```bash
 python tracking/analyze_uav_suite.py \
-  --tracker_name ostrack \
   --tracker_param vitb_256_mae_ce_vdrm_v8_a8_full_32x4_ep300 \
   --dataset all \
-  --display_name A8 \
   --force_evaluation
 ```
 
