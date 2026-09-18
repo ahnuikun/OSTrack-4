@@ -10,11 +10,11 @@ from lib.test.analysis.plot_results import print_per_sequence_results, print_res
 from lib.test.evaluation import get_dataset, trackerlist
 
 
-DATASETS = ['visdrone', 'uav123', 'uavdt', 'dtb70', 'lasot']
+DATASETS = ['visdrone', 'uav123', 'uavdt', 'dtb70']
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Analyze OSTrack results on the UAV/LaSOT evaluation suite.')
+    parser = argparse.ArgumentParser(description='Analyze OSTrack results on the four-dataset UAV evaluation suite.')
     parser.add_argument('--tracker_name', type=str, default='ostrack', help='Name of tracking method.')
     parser.add_argument('--tracker_param', type=str, required=True,
                         help='Name of tracker parameter/config file used during testing.')

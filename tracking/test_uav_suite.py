@@ -9,11 +9,11 @@ if prj_path not in sys.path:
 from tracking.test import run_tracker
 
 
-DATASETS = ['visdrone', 'uav123', 'uavdt', 'dtb70', 'lasot']
+DATASETS = ['visdrone', 'uav123', 'uavdt', 'dtb70']
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Run OSTrack tests on the UAV/LaSOT evaluation suite.')
+    parser = argparse.ArgumentParser(description='Run OSTrack tests on the four-dataset UAV evaluation suite.')
     parser.add_argument('--tracker_name', type=str, default='ostrack', help='Name of tracking method.')
     parser.add_argument('--tracker_param', type=str, required=True,
                         help='Name of tracker parameter/config file. The checkpoint is selected from this config.')

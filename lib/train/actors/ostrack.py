@@ -10,6 +10,13 @@ from ...utils.ce_utils import generate_mask_cond, adjust_keep_rate
 from ..data.vdrm_augmentation import apply_structured_target_occlusion
 
 
+def select_vdrm_part_route_weight(pred_dict, visibility_weighted=True):
+    """Select optional visibility weights for V8 part-route supervision."""
+    if not visibility_weighted:
+        return None
+    return pred_dict.get('vdrm_visibility_target')
+
+
 def compute_vdrm_part_rank_loss(
     part_similarity,
     search_global_index,
@@ -824,8 +831,15 @@ class OSTrackActor(BaseActor):
                         gt_gaussian_maps.shape[-2],
                         gt_gaussian_maps.shape[-1],
                         part_valid=pred_dict.get('part_valid'),
-                        part_weight=pred_dict.get(
-                            'vdrm_visibility_target'
+                        part_weight=select_vdrm_part_route_weight(
+                            pred_dict,
+                            visibility_weighted=bool(
+                                getattr(
+                                    self.cfg.TRAIN,
+                                    'VDRM_ROUTE_VISIBILITY_WEIGHTED',
+                                    True,
+                                )
+                            ),
                         ),
                         dilation=getattr(
                             self.cfg.TRAIN,

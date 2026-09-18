@@ -10,6 +10,7 @@ from lib.train.actors.ostrack import (
     compute_vdrm_part_route_loss,
     compute_vdrm_part_rank_loss,
     compute_vdrm_response_rank_loss,
+    select_vdrm_part_route_weight,
 )
 from lib.train.data.sampler import TrackingSampler
 from lib.train.data.vdrm_augmentation import (
@@ -301,6 +302,25 @@ class VDRMTest(unittest.TestCase):
         good_loss.backward()
         self.assertIsNotNone(good_logits.grad)
         self.assertTrue(torch.isfinite(good_logits.grad).all())
+
+    def test_part_route_visibility_weight_can_be_ablated(self):
+        visibility_target = torch.tensor([[1.0, 0.8, 0.4, 0.0]])
+        pred_dict = {'vdrm_visibility_target': visibility_target}
+
+        self.assertIs(
+            select_vdrm_part_route_weight(
+                pred_dict, visibility_weighted=True
+            ),
+            visibility_target,
+        )
+        self.assertIsNone(
+            select_vdrm_part_route_weight(
+                pred_dict, visibility_weighted=False
+            )
+        )
+        self.assertIsNone(
+            select_vdrm_part_route_weight({}, visibility_weighted=True)
+        )
 
     def test_candidate_consensus_prefers_colocated_multi_part_evidence(self):
         module = VisibilityDrivenRepresentationModule(

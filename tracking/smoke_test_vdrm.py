@@ -61,8 +61,14 @@ def main():
     update_config_from_file(args.config, base_cfg=cfg)
     # The smoke test validates wiring, not MAE checkpoint loading.
     cfg.MODEL.PRETRAIN_FILE = ""
-    # Ensure the visibility-loss path is exercised with batch size 1.
-    cfg.DATA.SEARCH.VDRM_OCCLUSION_PROBABILITY = 1.0
+    # Ensure visibility targets exist whenever an enabled loss path needs
+    # them. Structure-only ablations keep their registered clean inputs.
+    route_uses_visibility = bool(
+        cfg.TRAIN.VDRM_PART_ROUTE_WEIGHT > 0.0
+        and cfg.TRAIN.VDRM_ROUTE_VISIBILITY_WEIGHTED
+    )
+    if cfg.TRAIN.VDRM_VISIBILITY_WEIGHT > 0.0 or route_uses_visibility:
+        cfg.DATA.SEARCH.VDRM_OCCLUSION_PROBABILITY = 1.0
 
     model = build_ostrack(cfg, training=False).to(device)
     model.train()
@@ -123,16 +129,11 @@ def main():
     loss.backward()
 
     vdrm = model.backbone.vdrm
-    required_grads = {
-        "alpha": vdrm.alpha.grad,
-        "log_match_scale": vdrm.log_match_scale.grad,
-        "match_bias": vdrm.match_bias.grad,
-    }
-    for name, grad in required_grads.items():
-        if grad is None or not torch.isfinite(grad).all():
-            raise RuntimeError(f"invalid VDRM gradient for {name}: {grad}")
-        if not torch.count_nonzero(grad):
-            raise RuntimeError(f"zero VDRM gradient for {name}")
+    alpha_grad = vdrm.alpha.grad
+    if alpha_grad is None or not torch.isfinite(alpha_grad).all():
+        raise RuntimeError(f"invalid VDRM alpha gradient: {alpha_grad}")
+    if not torch.count_nonzero(alpha_grad):
+        raise RuntimeError("zero VDRM alpha gradient")
 
     with contextlib.redirect_stdout(io.StringIO()):
         optimizer, _ = get_optimizer_scheduler(model, cfg)
@@ -150,6 +151,23 @@ def main():
     optimizer.step()
     if torch.equal(vdrm.alpha.detach(), alpha_before_step):
         raise RuntimeError("VDRM alpha did not update after one optimizer step")
+
+    # With alpha initialized to zero, structure-only ablations legitimately
+    # give the residual branch zero gradient on the first step. Once alpha has
+    # moved, every VDRM parameter must receive tracking-loss gradients.
+    optimizer.zero_grad(set_to_none=True)
+    second_loss, status = actor(data)
+    if not torch.isfinite(second_loss):
+        raise RuntimeError(f"non-finite second smoke loss: {second_loss}")
+    second_loss.backward()
+    for name, parameter in vdrm.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        grad = parameter.grad
+        if grad is None or not torch.isfinite(grad).all():
+            raise RuntimeError(f"invalid VDRM gradient for {name}: {grad}")
+        if not torch.count_nonzero(grad):
+            raise RuntimeError(f"zero VDRM gradient for {name}")
 
     with tempfile.TemporaryDirectory(prefix="ostrack_vdrm_smoke_") as tmp_dir:
         checkpoint_path = os.path.join(tmp_dir, "vdrm_only.pth")

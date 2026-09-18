@@ -86,6 +86,10 @@ cfg.TRAIN.VDRM_RANK_WEIGHT = 0.5
 cfg.TRAIN.VDRM_CANDIDATE_WEIGHT = 0.0
 cfg.TRAIN.VDRM_PART_ROUTE_WEIGHT = 0.0
 cfg.TRAIN.VDRM_PART_TARGET_DILATION = 1.0
+# Keep the released V8 behavior by default. Ablation A5 disables this so
+# structured occlusion changes only the search image, while A6 restores the
+# visibility target as a weight on part-route supervision.
+cfg.TRAIN.VDRM_ROUTE_VISIBILITY_WEIGHTED = True
 cfg.TRAIN.VDRM_RANK_MARGIN = 0.1
 cfg.TRAIN.VDRM_AUX_WARMUP_EPOCHS = 20
 # V5-only switch. When enabled, HNCP samples take the rank negative from the
