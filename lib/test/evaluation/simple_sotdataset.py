@@ -49,7 +49,7 @@ class _FolderSOTDataset(BaseDataset):
 
 
 class VisDroneSOTDataset(_FolderSOTDataset):
-    def __init__(self, split='train'):
+    def __init__(self, split='test'):
         self.split = split
         super().__init__('visdrone', 'visdrone_path')
 
