@@ -5,8 +5,9 @@ validation, four-dataset testing, and analysis for one ablation before starting
 the next ablation. Do not launch A1-A8 as one training loop.
 
 All experiments use the same `tracking/train.py` launcher as the earlier VDRM
-runs, four visible GPUs, seed 42, and the same output root. The unique
-configuration name keeps checkpoints and results isolated.
+runs, four visible GPUs, and the same output root. The inner training script's
+existing default fixes the base seed at 42. The unique configuration name keeps
+checkpoints and results isolated.
 
 ## Dataset and environment preflight
 
@@ -45,7 +46,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
@@ -88,7 +88,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
@@ -131,7 +130,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
@@ -174,7 +172,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
@@ -217,7 +214,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
@@ -260,7 +256,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
@@ -303,7 +298,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
@@ -346,7 +340,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python tracking/train.py \
   --save_dir ./output \
   --mode multiple \
   --nproc_per_node 4 \
-  --seed 42 \
   --use_lmdb 0 \
   --use_wandb 0
 ```
