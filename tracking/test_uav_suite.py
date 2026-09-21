@@ -7,9 +7,40 @@ if prj_path not in sys.path:
     sys.path.append(prj_path)
 
 from tracking.test import run_tracker
+from lib.test.evaluation import get_dataset
 
 
 DATASETS = ['visdrone', 'uav123', 'uavdt', 'dtb70']
+EXPECTED_SEQUENCE_COUNTS = {
+    'visdrone': 35,
+    'uav123': 123,
+    'uavdt': 50,
+    'dtb70': 70,
+}
+
+
+def validate_dataset_protocol(dataset_name):
+    dataset = get_dataset(dataset_name)
+    actual_count = len(dataset)
+    expected_count = EXPECTED_SEQUENCE_COUNTS[dataset_name]
+    if actual_count != expected_count:
+        raise RuntimeError(
+            '{} protocol mismatch: expected {} sequences, found {}.'.format(
+                dataset_name, expected_count, actual_count
+            )
+        )
+
+    if dataset_name == 'visdrone':
+        first_frame = dataset[0].frames[0].replace('\\', '/')
+        if '/test/sequences/' not in first_frame:
+            raise RuntimeError(
+                'VisDrone protocol mismatch: expected the held-out test split, '
+                'but the first frame is {}.'.format(first_frame)
+            )
+
+    print('Dataset protocol: {} sequences={} PASS'.format(
+        dataset_name, actual_count
+    ))
 
 
 def parse_args():
@@ -36,6 +67,7 @@ def main():
         raise ValueError('--sequence can only be used when --dataset is a single dataset name.')
 
     for dataset_name in datasets:
+        validate_dataset_protocol(dataset_name)
         print('=' * 80)
         print('Testing dataset: {}'.format(dataset_name))
         print('=' * 80)

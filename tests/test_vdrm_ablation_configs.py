@@ -2,9 +2,12 @@ import copy
 import inspect
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from lib.config.ostrack.config import cfg, update_config_from_file
 from lib.test.evaluation.simple_sotdataset import VisDroneSOTDataset
+from tracking import test_uav_suite
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +56,42 @@ class VDRMAblationConfigTest(unittest.TestCase):
             VisDroneSOTDataset.__init__
         ).parameters["split"].default
         self.assertEqual(default, "test")
+
+    def test_uav_suite_registers_the_held_out_protocol(self):
+        self.assertEqual(
+            test_uav_suite.EXPECTED_SEQUENCE_COUNTS,
+            {
+                "visdrone": 35,
+                "uav123": 123,
+                "uavdt": 50,
+                "dtb70": 70,
+            },
+        )
+
+    def test_visdrone_protocol_accepts_test_35_and_rejects_train_86(self):
+        test_sequence = SimpleNamespace(
+            frames=["/datasets/visdrone/test/sequences/sequence/img0001.jpg"]
+        )
+        with patch.object(
+            test_uav_suite, "get_dataset", return_value=[test_sequence] * 35
+        ):
+            test_uav_suite.validate_dataset_protocol("visdrone")
+
+        with patch.object(
+            test_uav_suite, "get_dataset", return_value=[test_sequence] * 86
+        ):
+            with self.assertRaisesRegex(RuntimeError, "expected 35.*found 86"):
+                test_uav_suite.validate_dataset_protocol("visdrone")
+
+    def test_visdrone_protocol_rejects_train_path(self):
+        train_sequence = SimpleNamespace(
+            frames=["/datasets/visdrone/train/sequences/sequence/img0001.jpg"]
+        )
+        with patch.object(
+            test_uav_suite, "get_dataset", return_value=[train_sequence] * 35
+        ):
+            with self.assertRaisesRegex(RuntimeError, "held-out test split"):
+                test_uav_suite.validate_dataset_protocol("visdrone")
 
     def test_a1_to_a8_match_the_registered_matrix(self):
         for name, filename in ABLATION_CONFIGS.items():

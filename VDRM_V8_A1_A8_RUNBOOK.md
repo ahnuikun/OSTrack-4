@@ -20,13 +20,41 @@ VisDrone root, not its `test` child. The expected layout is:
 ```
 
 The dataset implementation appends `test` itself. Confirm the resolved first
-frame before training:
+frame and the frozen four-dataset protocol before training:
 
 ```bash
-python -c "from lib.test.evaluation.environment import env_settings; from lib.test.evaluation import get_dataset; s=env_settings(); d=get_dataset('visdrone'); print('root:', s.visdrone_path); print('sequences:', len(d)); print('first frame:', d[0].frames[0])"
+python - <<'PY'
+from lib.test.evaluation import get_dataset
+
+expected = {
+    'visdrone': 35,
+    'uav123': 123,
+    'uavdt': 50,
+    'dtb70': 70,
+}
+
+for name, expected_count in expected.items():
+    dataset = get_dataset(name)
+    actual_count = len(dataset)
+    print(name, actual_count)
+    assert actual_count == expected_count, (
+        '{}: expected {}, found {}'.format(
+            name, expected_count, actual_count
+        )
+    )
+
+visdrone = get_dataset('visdrone')
+first_frame = visdrone[0].frames[0].replace('\\', '/')
+print('VisDrone first frame:', first_frame)
+assert '/visdrone/test/sequences/' in first_frame
+print('Four-dataset protocol: PASS')
+PY
 ```
 
-The first-frame path must contain `/visdrone/test/sequences/`. Also ensure that
+The formal VisDrone result is the held-out 35-sequence `test` split. The
+86-sequence `train` split is training data and must never be reported as the
+formal VisDrone result. The test launcher repeats these checks and stops before
+evaluation if a count or the VisDrone split is wrong. Also ensure that
 `settings.save_dir` is the same directory passed as `--save_dir` below.
 
 Run the repository tests once before A1:
