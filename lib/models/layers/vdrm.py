@@ -90,6 +90,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         part_route_residual_floor: float = 1.0,
         candidate_modulation_max: float = 0.5,
         alpha_max: float = 0.0,
+        train_alpha: bool = True,
         eps: float = 1e-6,
     ) -> None:
         super().__init__()
@@ -251,6 +252,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
 
         # Zero initialization preserves the original OSTrack forward path.
         self.alpha = nn.Parameter(torch.zeros(()))
+        self.alpha.requires_grad_(bool(train_alpha))
 
     def _effective_alpha(self) -> torch.Tensor:
         """Return the residual LayerScale, optionally bounded for V8."""

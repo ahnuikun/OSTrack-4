@@ -8,6 +8,57 @@ import lib.train.data.transforms as tfm
 from lib.utils.misc import is_main_process
 
 
+_VDRM_AUXILIARY_WEIGHTS = (
+    "VDRM_VISIBILITY_WEIGHT",
+    "VDRM_RANK_WEIGHT",
+    "VDRM_CANDIDATE_WEIGHT",
+    "VDRM_PART_ROUTE_WEIGHT",
+)
+
+
+def validate_vdrm_experiment_contract(cfg, actual_seed=None):
+    """Fail fast when a named clean-ablation arm is not actually clean."""
+    arm = str(getattr(cfg.TRAIN, "VDRM_EXPERIMENT_ARM", "")).strip().lower()
+    if not arm:
+        return
+    if arm not in {"tclean", "ronly"}:
+        raise ValueError(
+            "TRAIN.VDRM_EXPERIMENT_ARM must be empty, 'tclean', or "
+            f"'ronly', got {arm!r}"
+        )
+
+    required_seed = getattr(cfg.TRAIN, "VDRM_REQUIRED_SEED", None)
+    if required_seed is None:
+        raise ValueError(f"{arm} requires TRAIN.VDRM_REQUIRED_SEED")
+    if actual_seed is None or int(actual_seed) != int(required_seed):
+        raise ValueError(
+            f"{arm} requires seed={int(required_seed)}, got {actual_seed!r}"
+        )
+
+    vdrm_cfg = getattr(cfg.MODEL, "VDRM", None)
+    if vdrm_cfg is None or not bool(vdrm_cfg.ENABLED):
+        raise ValueError(f"{arm} requires MODEL.VDRM.ENABLED=True")
+
+    nonzero_auxiliary = {
+        name: float(getattr(cfg.TRAIN, name))
+        for name in _VDRM_AUXILIARY_WEIGHTS
+        if float(getattr(cfg.TRAIN, name)) != 0.0
+    }
+    if nonzero_auxiliary:
+        raise ValueError(
+            f"{arm} requires every VDRM auxiliary weight to be zero, got "
+            f"{nonzero_auxiliary}"
+        )
+
+    train_alpha = bool(getattr(vdrm_cfg, "TRAIN_ALPHA", True))
+    expected_train_alpha = arm == "ronly"
+    if train_alpha != expected_train_alpha:
+        raise ValueError(
+            f"{arm} requires MODEL.VDRM.TRAIN_ALPHA="
+            f"{expected_train_alpha}, got {train_alpha}"
+        )
+
+
 def update_settings(settings, cfg):
     settings.print_interval = cfg.TRAIN.PRINT_INTERVAL
     settings.search_area_factor = {'template': cfg.DATA.TEMPLATE.FACTOR,

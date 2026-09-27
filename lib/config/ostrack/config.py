@@ -70,6 +70,9 @@ cfg.MODEL.VDRM.CANDIDATE_MODULATION_MAX = 0.5
 # 0 preserves the direct LayerScale used by V1-V7. V8 uses a positive bound
 # to prevent a shrinking spatial gate from being offset by alpha growth.
 cfg.MODEL.VDRM.ALPHA_MAX = 0.0
+# ``False`` defines the Tclean identity control: alpha stays exactly zero and
+# the VDRM residual cannot alter the forward pass during retraining.
+cfg.MODEL.VDRM.TRAIN_ALPHA = True
 
 # MODEL.HEAD
 cfg.MODEL.HEAD = edict()
@@ -104,6 +107,10 @@ cfg.TRAIN.VDRM_PART_ROUTE_WEIGHT = 0.0
 cfg.TRAIN.VDRM_PART_TARGET_DILATION = 1.0
 cfg.TRAIN.VDRM_RANK_MARGIN = 0.1
 cfg.TRAIN.VDRM_AUX_WARMUP_EPOCHS = 20
+# Optional clean-ablation contract. Named arms are validated before datasets
+# or the model are built so a mislabeled run cannot silently start.
+cfg.TRAIN.VDRM_EXPERIMENT_ARM = ""
+cfg.TRAIN.VDRM_REQUIRED_SEED = None
 # V17-only training switch. On applied HNCP samples, preserve V8's positive
 # route term while balancing the negative half equally between the pasted
 # same-class distractor and ordinary background. Inference is unchanged.

@@ -165,6 +165,7 @@ def build_ostrack(cfg, training=True):
                                             vdrm_part_route_residual_floor=vdrm_cfg.PART_ROUTE_RESIDUAL_FLOOR if vdrm_enabled else 1.0,
                                             vdrm_candidate_modulation_max=vdrm_cfg.CANDIDATE_MODULATION_MAX if vdrm_enabled else 0.5,
                                             vdrm_alpha_max=vdrm_cfg.ALPHA_MAX if vdrm_enabled else 0.0,
+                                            vdrm_train_alpha=vdrm_cfg.TRAIN_ALPHA if vdrm_enabled else True,
                                            )
         hidden_dim = backbone.embed_dim
         patch_start_index = 1
@@ -194,6 +195,7 @@ def build_ostrack(cfg, training=True):
                                             vdrm_part_route_residual_floor=vdrm_cfg.PART_ROUTE_RESIDUAL_FLOOR if vdrm_enabled else 1.0,
                                             vdrm_candidate_modulation_max=vdrm_cfg.CANDIDATE_MODULATION_MAX if vdrm_enabled else 0.5,
                                             vdrm_alpha_max=vdrm_cfg.ALPHA_MAX if vdrm_enabled else 0.0,
+                                            vdrm_train_alpha=vdrm_cfg.TRAIN_ALPHA if vdrm_enabled else True,
                                             )
 
         hidden_dim = backbone.embed_dim

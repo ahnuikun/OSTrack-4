@@ -48,7 +48,8 @@ class VisionTransformerCE(VisionTransformer):
                   vdrm_part_route_initial_match_bias=-2.5,
                   vdrm_part_route_residual_floor=1.0,
                   vdrm_candidate_modulation_max=0.5,
-                  vdrm_alpha_max=0.0):
+                  vdrm_alpha_max=0.0,
+                  vdrm_train_alpha=True):
         """
         Args:
             img_size (int, tuple): input image size
@@ -147,6 +148,7 @@ class VisionTransformerCE(VisionTransformer):
                 ),
                 candidate_modulation_max=vdrm_candidate_modulation_max,
                 alpha_max=vdrm_alpha_max,
+                train_alpha=vdrm_train_alpha,
             )
         else:
             self.vdrm = None

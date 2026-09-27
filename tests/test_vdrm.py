@@ -23,6 +23,7 @@ from lib.train.data.vdrm_paired_diagnostics import (
     create_paired_copy_pastes,
     normalized_center_distance,
 )
+from lib.train.base_functions import validate_vdrm_experiment_contract
 
 
 class VDRMTest(unittest.TestCase):
@@ -108,6 +109,60 @@ class VDRMTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(module.match_bias.grad))
         self.assertIsNotNone(tokens.grad)
         self.assertTrue(torch.isfinite(tokens.grad).all())
+
+    def test_frozen_zero_alpha_is_an_exact_training_identity(self):
+        torch.manual_seed(5)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4,
+            topk=4,
+            spatial_gate_mode="part_aligned",
+            alpha_max=1.5,
+            train_alpha=False,
+        )
+        tokens = torch.randn(2, 64 + 37, 32, requires_grad=True)
+        template_bbox = torch.tensor(
+            [[0.25, 0.25, 0.50, 0.50]] * 2
+        )
+
+        output, diagnostics = module(
+            tokens,
+            template_length=64,
+            template_bbox=template_bbox,
+        )
+        output.square().mean().backward()
+
+        self.assertTrue(torch.equal(output, tokens))
+        self.assertEqual(diagnostics["vdrm_alpha"].item(), 0.0)
+        self.assertFalse(module.alpha.requires_grad)
+        self.assertIsNone(module.alpha.grad)
+
+    def test_clean_arm_contract_accepts_only_seed_42_clean_configs(self):
+        train = SimpleNamespace(
+            VDRM_EXPERIMENT_ARM="tclean",
+            VDRM_REQUIRED_SEED=42,
+            VDRM_VISIBILITY_WEIGHT=0.0,
+            VDRM_RANK_WEIGHT=0.0,
+            VDRM_CANDIDATE_WEIGHT=0.0,
+            VDRM_PART_ROUTE_WEIGHT=0.0,
+        )
+        vdrm = SimpleNamespace(ENABLED=True, TRAIN_ALPHA=False)
+        cfg = SimpleNamespace(
+            TRAIN=train,
+            MODEL=SimpleNamespace(VDRM=vdrm),
+        )
+
+        validate_vdrm_experiment_contract(cfg, actual_seed=42)
+
+        train.VDRM_EXPERIMENT_ARM = "ronly"
+        vdrm.TRAIN_ALPHA = True
+        validate_vdrm_experiment_contract(cfg, actual_seed=42)
+
+        with self.assertRaisesRegex(ValueError, "requires seed=42"):
+            validate_vdrm_experiment_contract(cfg, actual_seed=7)
+
+        train.VDRM_VISIBILITY_WEIGHT = 0.5
+        with self.assertRaisesRegex(ValueError, "auxiliary weight"):
+            validate_vdrm_experiment_contract(cfg, actual_seed=42)
 
     def test_relative_norm_bound_caps_the_complete_residual_update(self):
         torch.manual_seed(11)

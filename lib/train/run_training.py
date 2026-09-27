@@ -55,6 +55,7 @@ def run_training(script_name, config_name, cudnn_benchmark=True, local_rank=-1, 
     if script_name_prv is not None and config_name_prv is not None:
         settings.project_path_prv = 'train/{}/{}'.format(script_name_prv, config_name_prv)
     settings.local_rank = local_rank
+    settings.seed = base_seed
     settings.save_dir = os.path.abspath(save_dir)
     settings.use_lmdb = use_lmdb
     prj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
