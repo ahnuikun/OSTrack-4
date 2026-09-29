@@ -24,7 +24,7 @@ dataset_dict = dict(
     vot22=DatasetInfo(module=pt % "vot", class_name="VOTDataset", kwargs=dict(year=22)),
     itb=DatasetInfo(module=pt % "itb", class_name="ITBDataset", kwargs=dict()),
     tnl2k=DatasetInfo(module=pt % "tnl2k", class_name="TNL2kDataset", kwargs=dict()),
-    visdrone=DatasetInfo(module=pt % "simple_sot", class_name="VisDroneSOTDataset", kwargs=dict()),
+    visdrone=DatasetInfo(module=pt % "simple_sot", class_name="VisDroneSOTDataset", kwargs=dict(split='test')),
     uavdt=DatasetInfo(module=pt % "simple_sot", class_name="UAVDTDataset", kwargs=dict()),
     dtb70=DatasetInfo(module=pt % "simple_sot", class_name="DTB70Dataset", kwargs=dict()),
     lasot_extension_subset=DatasetInfo(module=pt % "lasotextensionsubset", class_name="LaSOTExtensionSubsetDataset",

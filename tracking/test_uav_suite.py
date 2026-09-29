@@ -25,6 +25,8 @@ def parse_args():
     parser.add_argument('--debug', type=int, default=0, help='Debug level.')
     parser.add_argument('--threads', type=int, default=0, help='Number of parallel workers.')
     parser.add_argument('--num_gpus', type=int, default=4, help='Number of GPUs available for testing.')
+    parser.add_argument('--force', action='store_true',
+                        help='Rerun sequences even when result files already exist.')
     return parser.parse_args()
 
 
@@ -40,7 +42,8 @@ def main():
         print('Testing dataset: {}'.format(dataset_name))
         print('=' * 80)
         run_tracker(args.tracker_name, args.tracker_param, args.runid, dataset_name,
-                    args.sequence, args.debug, args.threads, num_gpus=args.num_gpus)
+                    args.sequence, args.debug, args.threads, num_gpus=args.num_gpus,
+                    force=args.force)
 
 
 if __name__ == '__main__':

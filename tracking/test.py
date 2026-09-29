@@ -12,7 +12,7 @@ from lib.test.evaluation.tracker import Tracker
 
 
 def run_tracker(tracker_name, tracker_param, run_id=None, dataset_name='otb', sequence=None, debug=0, threads=0,
-                num_gpus=8, checkpoint=None):
+                num_gpus=8, checkpoint=None, force=False):
     """Run tracker on sequence or dataset.
     args:
         tracker_name: Name of tracking method.
@@ -39,7 +39,7 @@ def run_tracker(tracker_name, tracker_param, run_id=None, dataset_name='otb', se
         )
     ]
 
-    run_dataset(dataset, trackers, debug, threads, num_gpus=num_gpus)
+    run_dataset(dataset, trackers, debug, threads, num_gpus=num_gpus, force=force)
 
 
 def main():
