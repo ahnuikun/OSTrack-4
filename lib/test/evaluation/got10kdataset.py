@@ -2,6 +2,31 @@ import numpy as np
 from lib.test.evaluation.data import Sequence, BaseDataset, SequenceList
 from lib.test.utils.load_text import load_text
 import os
+from pathlib import Path
+
+
+def _vdrm_dev_sequence_ids():
+    """152 fixed GOT-10k train IDs excluded from both VOT train and val."""
+    spec_dir = Path(__file__).resolve().parents[2] / 'train' / 'data_specs'
+
+    def read_ids(name):
+        return {
+            int(line)
+            for line in (spec_dir / name).read_text(encoding='utf-8').splitlines()
+            if line.strip()
+        }
+
+    val_ids = read_ids('got10k_val_split.txt')
+    vot_val_ids = read_ids('got10k_vot_val_split.txt')
+    vot_train_ids = read_ids('got10k_vot_train_split.txt')
+    dev_ids = val_ids - vot_val_ids
+    if not vot_val_ids <= val_ids or dev_ids & (vot_train_ids | vot_val_ids):
+        raise ValueError('GOT-10k VDRM dev split overlaps train or held-out val')
+    if len(dev_ids) != 152:
+        raise ValueError(
+            f'Expected 152 fixed GOT-10k VDRM dev sequences, got {len(dev_ids)}'
+        )
+    return sorted(dev_ids)
 
 
 class GOT10KDataset(BaseDataset):
@@ -17,7 +42,8 @@ class GOT10KDataset(BaseDataset):
     """
     def __init__(self, split):
         super().__init__()
-        # Split can be test, val, or ltrval (a validation split consisting of videos from the official train set)
+        # vdrm_dev is a fixed subset of the official train directory, but
+        # its sequence IDs are excluded from VDRM's VOT train and val lists.
         if split == 'test' or split == 'val':
             self.base_path = os.path.join(self.env_settings.got10k_path, split)
         else:
@@ -53,4 +79,9 @@ class GOT10KDataset(BaseDataset):
                 seq_ids = f.read().splitlines()
 
             sequence_list = [sequence_list[int(x)] for x in seq_ids]
+        elif split == 'vdrm_dev':
+            dev_ids = _vdrm_dev_sequence_ids()
+            if dev_ids[-1] >= len(sequence_list):
+                raise ValueError('GOT-10k train/list.txt is shorter than dev IDs')
+            sequence_list = [sequence_list[index] for index in dev_ids]
         return sequence_list

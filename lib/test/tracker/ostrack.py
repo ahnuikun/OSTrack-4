@@ -35,6 +35,17 @@ def _apply_vdrm_alpha_override(network, alpha_override):
     return checkpoint_alpha, network.backbone.vdrm.alpha.detach().item()
 
 
+def _apply_vdrm_inference_ablation(network, ablation):
+    if ablation is None:
+        return None
+    if not hasattr(network.backbone, "vdrm"):
+        raise ValueError(
+            "TEST.VDRM_INFERENCE_ABLATION requires an enabled VDRM backbone"
+        )
+    network.backbone.vdrm.set_inference_ablation(ablation)
+    return ablation
+
+
 class OSTrack(BaseTracker):
     def __init__(self, params, dataset_name):
         super(OSTrack, self).__init__(params)
@@ -50,6 +61,11 @@ class OSTrack(BaseTracker):
                 f"checkpoint={checkpoint_alpha:.8f}, "
                 f"runtime={runtime_alpha:.8f}"
             )
+        ablation = _apply_vdrm_inference_ablation(
+            network, getattr(self.params, "vdrm_inference_ablation", None)
+        )
+        if ablation is not None:
+            print(f"VDRM inference ablation: {ablation}")
         self.cfg = params.cfg
         self.network = network.cuda()
         self.network.eval()

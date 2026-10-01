@@ -10,6 +10,7 @@ from tracking.test import run_tracker
 
 
 DATASETS = ['visdrone', 'uav123', 'uavdt', 'dtb70', 'lasot']
+EXTRA_DATASETS = ['got10k_vdrm_dev']
 
 
 def parse_args():
@@ -17,8 +18,8 @@ def parse_args():
     parser.add_argument('--tracker_name', type=str, default='ostrack', help='Name of tracking method.')
     parser.add_argument('--tracker_param', type=str, required=True,
                         help='Name of tracker parameter/config file. The checkpoint is selected from this config.')
-    parser.add_argument('--dataset', type=str, default='all', choices=['all'] + DATASETS,
-                        help='Dataset to test. Use "all" to test all configured datasets.')
+    parser.add_argument('--dataset', type=str, default='all', choices=['all'] + DATASETS + EXTRA_DATASETS,
+                        help='Dataset to test. Use "all" for the original suite or select got10k_vdrm_dev explicitly.')
     parser.add_argument('--runid', type=int, default=None, help='The run id.')
     parser.add_argument('--sequence', type=str, default=None,
                         help='Sequence number or name. Only valid when testing one dataset.')

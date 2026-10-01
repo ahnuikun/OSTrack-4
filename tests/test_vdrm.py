@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 
 import numpy as np
@@ -27,6 +28,67 @@ from lib.train.base_functions import validate_vdrm_experiment_contract
 
 
 class VDRMTest(unittest.TestCase):
+    def test_v8_inference_ablations_preserve_checkpoint_and_raw_diagnostics(self):
+        torch.manual_seed(420)
+        module = VisibilityDrivenRepresentationModule(
+            num_parts=4, spatial_gate_mode="part_aligned", alpha_max=1.5,
+        ).eval()
+        module.alpha.data.fill_(-0.6)
+        tokens = torch.randn(2, 64 + 37, 32)
+        bbox = torch.tensor([[0.2, 0.2, 0.6, 0.6]] * 2)
+        original, original_diag = module(
+            tokens, template_length=64, template_bbox=bbox,
+        )
+        state_keys = set(module.state_dict())
+        part_masks, part_valid = module._build_part_masks(bbox, 64)
+        part_count = part_masks.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        prototypes = torch.einsum(
+            "bkl,blc->bkc", part_masks, tokens[:, :64]
+        ) / part_count
+        prototypes = prototypes * part_valid.unsqueeze(-1)
+        valid_count = part_valid.sum(dim=-1, keepdim=True).clamp_min(1)
+
+        for ablation in ("part_mean", "route_spatial_mean"):
+            probed = deepcopy(module)
+            probed.set_inference_ablation(ablation)
+            output, diagnostics = probed(
+                tokens, template_length=64, template_bbox=bbox,
+            )
+            self.assertEqual(set(probed.state_dict()), state_keys)
+            self.assertFalse(torch.equal(output, original))
+            self.assertTrue(torch.equal(
+                diagnostics["part_reliability"],
+                original_diag["part_reliability"],
+            ))
+            self.assertTrue(torch.equal(
+                diagnostics["part_route_gate"],
+                original_diag["part_route_gate"],
+            ))
+            self.assertTrue(torch.equal(
+                diagnostics["visual_reliability"],
+                original_diag["visual_reliability"],
+            ))
+            route = original_diag["part_route_gate"]
+            reliability = original_diag["part_reliability"]
+            if ablation == "part_mean":
+                reliability = (
+                    reliability.sum(dim=-1, keepdim=True)
+                    / valid_count
+                ) * part_valid
+            else:
+                route = route.mean(dim=-1, keepdim=True).expand_as(route)
+            expected_residual = torch.einsum(
+                "bkl,bkc->blc", route * reliability.unsqueeze(-1),
+                prototypes,
+            ) / valid_count.unsqueeze(-1)
+            expected_search = tokens[:, 64:] + (
+                diagnostics["vdrm_alpha"] * expected_residual
+            )
+            torch.testing.assert_close(output[:, 64:], expected_search)
+
+        with self.assertRaisesRegex(ValueError, "inference ablation"):
+            module.set_inference_ablation("unknown")
+
     class _FakeClassDataset:
         def has_class_info(self):
             return True

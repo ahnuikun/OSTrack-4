@@ -11,6 +11,7 @@ from lib.test.evaluation import get_dataset, trackerlist
 
 
 DATASETS = ['visdrone', 'uav123', 'uavdt', 'dtb70', 'lasot']
+EXTRA_DATASETS = ['got10k_vdrm_dev']
 
 
 def parse_args():
@@ -18,8 +19,8 @@ def parse_args():
     parser.add_argument('--tracker_name', type=str, default='ostrack', help='Name of tracking method.')
     parser.add_argument('--tracker_param', type=str, required=True,
                         help='Name of tracker parameter/config file used during testing.')
-    parser.add_argument('--dataset', type=str, default='all', choices=['all'] + DATASETS,
-                        help='Dataset to analyze. Use "all" to analyze all configured datasets.')
+    parser.add_argument('--dataset', type=str, default='all', choices=['all'] + DATASETS + EXTRA_DATASETS,
+                        help='Dataset to analyze. Use "all" for the original suite or select got10k_vdrm_dev explicitly.')
     parser.add_argument('--display_name', type=str, default=None,
                         help='Display name shown in the result table. Defaults to tracker_param.')
     parser.add_argument('--force_evaluation', action='store_true',

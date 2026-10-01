@@ -173,6 +173,8 @@ cfg.TEST.SEARCH_SIZE = 320
 cfg.TEST.EPOCH = 500
 cfg.TEST.CHECKPOINT_CONFIG = ""
 cfg.TEST.VDRM_ALPHA_OVERRIDE = None
+# Test-only, checkpoint-compatible probes. Never applied by training.
+cfg.TEST.VDRM_INFERENCE_ABLATION = None
 
 
 def _edict2dict(dest_dict, src_edict):

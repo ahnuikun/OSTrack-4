@@ -25,6 +25,7 @@ def parameters(yaml_name: str):
     params.checkpoint = os.path.join(save_dir, "checkpoints/train/ostrack/%s/OSTrack_ep%04d.pth.tar" %
                                      (checkpoint_config, cfg.TEST.EPOCH))
     params.vdrm_alpha_override = cfg.TEST.VDRM_ALPHA_OVERRIDE
+    params.vdrm_inference_ablation = cfg.TEST.VDRM_INFERENCE_ABLATION
 
     # whether to save boxes from all queries
     params.save_all_boxes = False

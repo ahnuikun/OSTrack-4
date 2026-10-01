@@ -253,6 +253,21 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         # Zero initialization preserves the original OSTrack forward path.
         self.alpha = nn.Parameter(torch.zeros(()))
         self.alpha.requires_grad_(bool(train_alpha))
+        # Runtime-only probes retain the exact trained checkpoint schema.
+        self.inference_ablation = None
+
+    def set_inference_ablation(self, ablation: str) -> None:
+        """Select one V8 residual component to neutralize at inference."""
+        if self.spatial_gate_mode != "part_aligned":
+            raise ValueError(
+                "VDRM inference ablations require V8 part_aligned mode"
+            )
+        if ablation not in ("part_mean", "route_spatial_mean"):
+            raise ValueError(
+                "VDRM inference ablation must be 'part_mean' or "
+                f"'route_spatial_mean', got {ablation!r}"
+            )
+        self.inference_ablation = ablation
 
     def _effective_alpha(self) -> torch.Tensor:
         """Return the residual LayerScale, optionally bounded for V8."""
@@ -404,6 +419,12 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         route_retention = torch.ones_like(route_gate)
         residual_route_gate = route_gate
         residual_route_diagnostics = {}
+        if self.inference_ablation == "route_spatial_mean":
+            # Preserve each part's mean route mass while removing its spatial
+            # selectivity. Diagnostics continue to report the original map.
+            residual_route_gate = route_gate.mean(
+                dim=-1, keepdim=True
+            ).expand_as(route_gate)
         if self.spatial_gate_mode in (
             "part_aligned_sharpened",
             "part_aligned_positive_preserved",
@@ -965,6 +986,17 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         part_reliability = (
             part_reliability * part_valid.to(part_reliability.dtype)
         )
+        residual_part_reliability = part_reliability
+        if self.inference_ablation == "part_mean":
+            # Preserve per-frame mean gate strength, but remove the relative
+            # preference between template parts. Raw q remains diagnostic.
+            valid_count = part_valid.sum(dim=-1, keepdim=True).clamp_min(1)
+            mean_reliability = (
+                part_reliability.sum(dim=-1, keepdim=True) / valid_count
+            )
+            residual_part_reliability = (
+                mean_reliability * part_valid.to(part_reliability.dtype)
+            )
 
         route_diagnostics = {}
         part_route_gate = None
@@ -988,7 +1020,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 self._part_aligned_statistics(
                     similarity,
                     prototypes,
-                    part_reliability,
+                    residual_part_reliability,
                     part_valid,
                 )
             )
