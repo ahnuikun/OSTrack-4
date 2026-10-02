@@ -40,3 +40,14 @@
 测试前确认 GOT-10k train 目录在服务器的 `data/got10k/train`，以及 B0、Tclean、Ronly 的 epoch-300 checkpoint 均存在。
 
 当前测试写入代码对 GOT-10k 使用 `output/test/tracking_results/ostrack/<配置名>/got10k/<序列>.txt`；UAVDT、DTB70 等使用 `<配置名>/<序列>.txt`。现有 GOT-10k 文件出现平铺与嵌套两种布局；仅凭路径无法判定其生成原因。分析读取兼容两种布局，启动时逐臂打印两种路径的文件数，无须移动或重跑已有结果。若同一序列两处都有内容不同的 TXT，分析会明确报错，避免静默选择错误结果；测试写入和跳过检查仍只使用嵌套路径。
+
+## 已定位失败的原图取证
+
+`tracking/export_vdrm_module1_keyframes.py` 只读取固定开发集六条序列的 60 张已有图像，打包首次分歧、恢复与必要对照的帧，并包含每条序列的首帧模板。帧号是 1-based，并按照数据集适配器的实际帧顺序解析；不假定服务器的 JPG 命名格式。脚本先检查全部源文件，再创建新包；已有同名输出不会被覆盖。
+
+```bash
+python tracking/export_vdrm_module1_keyframes.py \
+  --output output/vdrm_module1_keyframes.tar.gz
+```
+
+输出包括 `manifest.json`（序列、原始路径、1-based 帧号、GT 框）和 `images/<序列>/<帧号>.jpg`。它不加载 checkpoint，不运行跟踪，不改已有结果。将包下载到本地分析目录后，用已经保存的预测框核验错误位置是否对应相似实例；单靠低 IoU 不能断言身份切换。这批按失败现象选出的帧仅用于诊断，不构成新的筛选或确认测试集。
