@@ -17,9 +17,9 @@ if project_path not in sys.path:
     sys.path.append(project_path)
 
 from lib.test.analysis.plot_results import print_per_sequence_results, print_results
-from lib.test.analysis.extract_results import tracking_result_path
 from lib.test.evaluation import get_dataset, trackerlist
 from lib.test.evaluation.environment import env_settings
+from lib.test.evaluation.result_paths import result_bbox_path, resolve_result_bbox_path
 
 
 def main():
@@ -45,12 +45,20 @@ def main():
     if args.reference not in args.tracker_params:
         parser.error('--reference must also appear in --tracker_params')
     missing_by_arm = {}
+    layout_by_arm = {}
     for tracker in trackers:
-        missing = [
-            tracking_result_path(tracker, seq)
-            for seq in dataset
-            if not os.path.isfile(tracking_result_path(tracker, seq))
-        ]
+        missing = []
+        nested = 0
+        flat = 0
+        for seq in dataset:
+            path = resolve_result_bbox_path(tracker.results_dir, seq)
+            if not os.path.isfile(path):
+                missing.append(path)
+            elif path == result_bbox_path(tracker.results_dir, seq):
+                nested += 1
+            else:
+                flat += 1
+        layout_by_arm[tracker.parameter_name] = (nested, flat)
         if missing:
             missing_by_arm[tracker.parameter_name] = missing
     if missing_by_arm:
@@ -61,6 +69,8 @@ def main():
         raise FileNotFoundError(
             'Complete every tracking arm before paired analysis:\n' + details
         )
+    for name, (nested, flat) in layout_by_arm.items():
+        print(f'{name}: {nested} nested + {flat} flat GOT-10k result files')
     report_name = 'vdrm_module1_dev'
     print(f'Analyzing fixed GOT-10k VDRM dev: {len(dataset)}/152 sequences')
     print_results(trackers, dataset, report_name, merge_results=True,

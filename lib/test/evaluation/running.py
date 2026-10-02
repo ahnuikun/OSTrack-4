@@ -8,23 +8,17 @@ import sys
 from itertools import product
 from collections import OrderedDict
 from lib.test.evaluation import Sequence, Tracker
+from lib.test.evaluation.result_paths import result_base_path, result_bbox_path
 import torch
 
 
 def _save_tracker_output(seq: Sequence, tracker: Tracker, output: dict):
     """Saves the output of the tracker."""
 
+    base_results_path = result_base_path(tracker.results_dir, seq)
     if not os.path.exists(tracker.results_dir):
         print("create tracking result dir:", tracker.results_dir)
-        os.makedirs(tracker.results_dir)
-    if seq.dataset in ['trackingnet', 'got10k']:
-        if not os.path.exists(os.path.join(tracker.results_dir, seq.dataset)):
-            os.makedirs(os.path.join(tracker.results_dir, seq.dataset))
-    '''2021.1.5 create new folder for these two datasets'''
-    if seq.dataset in ['trackingnet', 'got10k']:
-        base_results_path = os.path.join(tracker.results_dir, seq.dataset, seq.name)
-    else:
-        base_results_path = os.path.join(tracker.results_dir, seq.name)
+    os.makedirs(os.path.dirname(base_results_path), exist_ok=True)
 
     def save_bb(file, data):
         tracked_bb = np.array(data).astype(int)
@@ -115,14 +109,12 @@ def run_sequence(seq: Sequence, tracker: Tracker, debug=False, num_gpu=8, force=
 
     def _results_exist():
         if seq.object_ids is None:
-            if seq.dataset in ['trackingnet', 'got10k']:
-                base_results_path = os.path.join(tracker.results_dir, seq.dataset, seq.name)
-                bbox_file = '{}.txt'.format(base_results_path)
-            else:
-                bbox_file = '{}/{}.txt'.format(tracker.results_dir, seq.name)
-            return os.path.isfile(bbox_file)
+            return os.path.isfile(result_bbox_path(tracker.results_dir, seq))
         else:
-            bbox_files = ['{}/{}_{}.txt'.format(tracker.results_dir, seq.name, obj_id) for obj_id in seq.object_ids]
+            bbox_files = [
+                result_bbox_path(tracker.results_dir, seq, obj_id)
+                for obj_id in seq.object_ids
+            ]
             missing = [not os.path.isfile(f) for f in bbox_files]
             return sum(missing) == 0
 

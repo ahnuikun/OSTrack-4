@@ -49,6 +49,11 @@ class VDRMModule1AnalysisTest(unittest.TestCase):
                         {'target_bbox': predicted.tolist(),
                          'time': [0.01, 0.01]},
                     )
+                    if arm in ('qflat', 'clip20'):
+                        # Reproduce the existing server's mixed flat/nested
+                        # GOT-10k output layout without modifying real data.
+                        nested = Path(tracker.results_dir) / 'got10k' / f'{sequence.name}.txt'
+                        nested.rename(Path(tracker.results_dir) / f'{sequence.name}.txt')
 
             def trackerlist(*, parameter_name, **_):
                 return [trackers[parameter_name]]

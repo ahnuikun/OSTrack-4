@@ -38,3 +38,5 @@
 先测试 B0、Tclean、Ronly、α0、qflat、routeflat、clip20 的 `got10k_vdrm_dev`；全部测试命令只调用已有 checkpoint，不调用 `tracking/train.py`。然后一次运行 `tracking/analyze_vdrm_module1_dev.py`，它会从七臂结果 TXT 计算 152/152 的对照表、逐序列 AO 和配对 bootstrap 区间。缓存写入 `output/test/result_plots/vdrm_module1_dev/eval_data.pkl`，可用 `tee` 另存终端报告。
 
 测试前确认 GOT-10k train 目录在服务器的 `data/got10k/train`，以及 B0、Tclean、Ronly 的 epoch-300 checkpoint 均存在。
+
+当前测试写入代码对 GOT-10k 使用 `output/test/tracking_results/ostrack/<配置名>/got10k/<序列>.txt`；UAVDT、DTB70 等使用 `<配置名>/<序列>.txt`。现有 GOT-10k 文件出现平铺与嵌套两种布局；仅凭路径无法判定其生成原因。分析读取兼容两种布局，启动时逐臂打印两种路径的文件数，无须移动或重跑已有结果。若同一序列两处都有内容不同的 TXT，分析会明确报错，避免静默选择错误结果；测试写入和跳过检查仍只使用嵌套路径。

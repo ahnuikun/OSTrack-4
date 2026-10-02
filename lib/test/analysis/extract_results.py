@@ -11,15 +11,7 @@ if env_path not in sys.path:
     sys.path.append(env_path)
 
 from lib.test.evaluation.environment import env_settings
-
-
-def tracking_result_path(tracker, seq):
-    """Match the path written by evaluation.running._save_tracker_output."""
-    if seq.dataset in ('trackingnet', 'got10k'):
-        return os.path.join(
-            tracker.results_dir, seq.dataset, seq.name + '.txt'
-        )
-    return os.path.join(tracker.results_dir, seq.name + '.txt')
+from lib.test.evaluation.result_paths import resolve_result_bbox_path
 
 
 def calc_err_center(pred_bb, anno_bb, normalized=False):
@@ -138,7 +130,7 @@ def extract_results(trackers, dataset, report_name, skip_missing_seq=False, plot
         target_visible = torch.tensor(seq.target_visible, dtype=torch.uint8) if seq.target_visible is not None else None
         for trk_id, trk in enumerate(trackers):
             # Load results
-            results_path = tracking_result_path(trk, seq)
+            results_path = resolve_result_bbox_path(trk.results_dir, seq)
 
             if os.path.isfile(results_path):
                 pred_bb = torch.tensor(load_text(str(results_path), delimiter=('\t', ','), dtype=np.float64))
