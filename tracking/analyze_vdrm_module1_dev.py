@@ -17,6 +17,7 @@ if project_path not in sys.path:
     sys.path.append(project_path)
 
 from lib.test.analysis.plot_results import print_per_sequence_results, print_results
+from lib.test.analysis.extract_results import tracking_result_path
 from lib.test.evaluation import get_dataset, trackerlist
 from lib.test.evaluation.environment import env_settings
 
@@ -43,6 +44,23 @@ def main():
     ]
     if args.reference not in args.tracker_params:
         parser.error('--reference must also appear in --tracker_params')
+    missing_by_arm = {}
+    for tracker in trackers:
+        missing = [
+            tracking_result_path(tracker, seq)
+            for seq in dataset
+            if not os.path.isfile(tracking_result_path(tracker, seq))
+        ]
+        if missing:
+            missing_by_arm[tracker.parameter_name] = missing
+    if missing_by_arm:
+        details = '\n'.join(
+            f'{name}: missing {len(paths)}/152, first: {paths[0]}'
+            for name, paths in missing_by_arm.items()
+        )
+        raise FileNotFoundError(
+            'Complete every tracking arm before paired analysis:\n' + details
+        )
     report_name = 'vdrm_module1_dev'
     print(f'Analyzing fixed GOT-10k VDRM dev: {len(dataset)}/152 sequences')
     print_results(trackers, dataset, report_name, merge_results=True,
