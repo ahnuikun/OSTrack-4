@@ -66,6 +66,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from torch import nn
 import torch.nn.functional as F
+from .discriminative_route import DiscriminativePartRoute
 
 
 class VisibilityDrivenRepresentationModule(nn.Module):
@@ -255,6 +256,15 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         self.alpha.requires_grad_(bool(train_alpha))
         # Runtime-only probes retain the exact trained checkpoint schema.
         self.inference_ablation = None
+        self.route_head = None
+
+    def enable_discriminative_route(self, embed_dim, projection_dim=32, hidden_dim=64):
+        if self.spatial_gate_mode != 'part_aligned' or self.route_head is not None:
+            raise ValueError('Rdisc requires an unmodified V8 part_aligned path')
+        # Extra head initialization must not shift the training loader's RNG
+        # stream relative to Rfreeze, or the two arms see different samples.
+        with torch.random.fork_rng(devices=[]):
+            self.route_head = DiscriminativePartRoute(embed_dim, projection_dim, hidden_dim)
 
     def set_inference_ablation(self, ablation: str) -> None:
         """Select one V8 residual component to neutralize at inference."""
@@ -387,6 +397,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         prototypes: torch.Tensor,
         part_reliability: torch.Tensor,
         part_valid: torch.Tensor,
+        route_logits_override=None,
     ) -> Tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]
     ]:
@@ -402,6 +413,10 @@ class VisibilityDrivenRepresentationModule(nn.Module):
         route_logits = (
             route_scale * similarity + self.part_route_match_bias
         )
+        if route_logits_override is not None:
+            if route_logits_override.shape != route_logits.shape:
+                raise ValueError('discriminative route logits shape mismatch')
+            route_logits = route_logits_override
         route_gate = torch.sigmoid(route_logits)
         route_gate = route_gate * part_valid.unsqueeze(-1).to(
             route_gate.dtype
@@ -1000,6 +1015,16 @@ class VisibilityDrivenRepresentationModule(nn.Module):
 
         route_diagnostics = {}
         part_route_gate = None
+        route_logits_override = None
+        if self.route_head is not None:
+            correction = self.route_head(
+                prototypes, search_tokens, search_global_index, search_grid_size,
+            )
+            prior = F.softplus(self.part_route_log_match_scale) * similarity + self.part_route_match_bias
+            route_logits_override = prior + correction
+            # Auxiliary supervision is intentionally independent of every
+            # original scalar, alpha, and the visual feature graph.
+            discriminative_route_logits = prior.detach() + correction
         if self.spatial_gate_mode in (
             "part_aligned",
             "part_aligned_consensus",
@@ -1022,6 +1047,7 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                     prototypes,
                     residual_part_reliability,
                     part_valid,
+                    route_logits_override=route_logits_override,
                 )
             )
             route_diagnostics = {
@@ -1030,6 +1056,8 @@ class VisibilityDrivenRepresentationModule(nn.Module):
                 "part_similarity": similarity,
                 "search_global_index": search_global_index,
             }
+            if self.route_head is not None:
+                route_diagnostics['discriminative_route_logits'] = discriminative_route_logits
             if self.spatial_gate_mode in (
                 "part_aligned_sharpened",
                 "part_aligned_positive_preserved",

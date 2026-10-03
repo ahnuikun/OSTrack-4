@@ -17,6 +17,7 @@ from lib.train.actors import OSTrackActor
 import importlib
 
 from ..utils.focal_loss import FocalLoss
+from .frozen_vdrm import is_frozen_run, prepare_frozen_models, audit_training_loader
 
 
 def run(settings):
@@ -26,8 +27,8 @@ def run(settings):
     if not os.path.exists(settings.cfg_file):
         raise ValueError("%s doesn't exist." % settings.cfg_file)
     config_module = importlib.import_module("lib.config.%s.config" % settings.script_name)
-    cfg = config_module.cfg
-    config_module.update_config_from_file(settings.cfg_file)
+    cfg = config_module.default_config()
+    config_module.update_config_from_file(settings.cfg_file, cfg)
     validate_vdrm_experiment_contract(
         cfg, actual_seed=getattr(settings, "seed", None)
     )
@@ -47,6 +48,17 @@ def run(settings):
             os.makedirs(log_dir)
     settings.log_file = os.path.join(log_dir, "%s-%s.log" % (settings.script_name, settings.config_name))
 
+    frozen = is_frozen_run(cfg)
+    if frozen:
+        import torch.distributed as dist
+        if settings.local_rank == -1 or dist.get_world_size() != 4:
+            raise ValueError('Rfreeze/Rdisc formal training requires --mode multiple --nproc_per_node 4')
+        net, frozen_baseline, source_path = prepare_frozen_models(
+            cfg, settings.save_dir, settings.config_name,
+        )
+        if settings.local_rank == 0:
+            print('Strict frozen Tclean source:', source_path)
+
     # Build dataloaders
     loader_train, loader_val = build_dataloaders(cfg, settings)
 
@@ -54,13 +66,21 @@ def run(settings):
         cfg.ckpt_dir = settings.save_dir
 
     # Create network
-    if settings.script_name == "ostrack":
+    if settings.script_name == "ostrack" and not frozen:
         net = build_ostrack(cfg)
-    else:
+    elif settings.script_name != 'ostrack':
         raise ValueError("illegal script name")
 
     # wrap networks to distributed one
     net.cuda()
+    if frozen:
+        frozen_baseline.cuda()
+        report_path = os.path.join(log_dir, settings.config_name + '-frozen-preflight.json') if settings.local_rank == 0 else None
+        result = audit_training_loader(net, frozen_baseline, cfg, loader_train, report_path)
+        if settings.local_rank == 0:
+            print('FROZEN PREFLIGHT PASSED (actual training minibatch, no optimizer step):', result)
+        del frozen_baseline
+        torch.cuda.empty_cache()
     if settings.local_rank != -1:
         # net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)  # add syncBN converter
         net = DDP(net, device_ids=[settings.local_rank], find_unused_parameters=True)
@@ -85,7 +105,8 @@ def run(settings):
     # Optimizer, parameters, and learning rates
     optimizer, lr_scheduler = get_optimizer_scheduler(net, cfg)
     use_amp = getattr(cfg.TRAIN, "AMP", False)
-    trainer = LTRTrainer(actor, [loader_train, loader_val], optimizer, settings, lr_scheduler, use_amp=use_amp)
+    loaders = [loader_train] + ([loader_val] if loader_val is not None else [])
+    trainer = LTRTrainer(actor, loaders, optimizer, settings, lr_scheduler, use_amp=use_amp)
 
     # train process
-    trainer.train(cfg.TRAIN.EPOCH, load_latest=True, fail_safe=True)
+    trainer.train(cfg.TRAIN.EPOCH, load_latest=True, fail_safe=not frozen)

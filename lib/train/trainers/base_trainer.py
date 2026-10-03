@@ -131,6 +131,11 @@ class BaseTrainer:
             'stats': self.stats,
             'settings': self.settings
         }
+        if hasattr(net, 'frozen_vdrm_contract'):
+            from lib.train.frozen_vdrm import visual_hash
+            if visual_hash(state['net']) != net.frozen_vdrm_contract['visual_sha256']:
+                raise RuntimeError('refusing to save modified frozen visual weights/buffers')
+            state['frozen_vdrm_contract'] = net.frozen_vdrm_contract
 
         directory = '{}/{}'.format(self._checkpoint_dir, self.settings.project_path)
         print(directory)
@@ -192,6 +197,10 @@ class BaseTrainer:
 
         # Load network
         checkpoint_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+        if hasattr(net, 'frozen_vdrm_contract'):
+            from lib.train.frozen_vdrm import validate_frozen_checkpoint
+            validate_frozen_checkpoint(net, checkpoint_dict, expected=net.frozen_vdrm_contract)
 
         assert net_type == checkpoint_dict['net_type'], 'Network is not of correct type.'
 

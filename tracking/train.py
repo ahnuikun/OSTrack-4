@@ -58,7 +58,10 @@ def main():
                        args.distill, args.script_teacher, args.config_teacher)
     else:
         raise ValueError("mode should be 'single' or 'multiple'.")
-    os.system(train_cmd)
+    status = os.system(train_cmd)
+    if status:
+        # Propagate torchrun/child failure instead of returning launcher exit 0.
+        raise SystemExit(status if os.name == 'nt' else os.waitstatus_to_exitcode(status))
 
 
 if __name__ == "__main__":

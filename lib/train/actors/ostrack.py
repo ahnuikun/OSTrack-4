@@ -8,6 +8,7 @@ from lib.utils.merge import merge_template_search
 from ...utils.heapmap_utils import generate_heatmap
 from ...utils.ce_utils import generate_mask_cond, adjust_keep_rate
 from ..data.vdrm_augmentation import apply_structured_target_occlusion
+from .discriminative_route_loss import compute_discriminative_route_loss
 
 
 def compute_vdrm_part_rank_loss(
@@ -770,7 +771,7 @@ class OSTrackActor(BaseActor):
 
         return loss, status
 
-    def forward_pass(self, data):
+    def forward_pass(self, data, audit=False):
         # currently only support 1 template and 1 search region
         assert len(data['template_images']) == 1
         assert len(data['search_images']) == 1
@@ -788,6 +789,7 @@ class OSTrackActor(BaseActor):
 
         visibility_target = None
         visibility_applied = None
+        occlusion_mask = None
         vdrm_cfg = getattr(self.cfg.MODEL, "VDRM", None)
         vdrm_enabled = bool(vdrm_cfg is not None and vdrm_cfg.ENABLED)
         occlusion_probability = getattr(
@@ -795,16 +797,18 @@ class OSTrackActor(BaseActor):
         )
         if vdrm_enabled and self.net.training and occlusion_probability > 0.0:
             search_bbox = data['search_anno'][0].view(-1, 4)
-            search_img, visibility_target, visibility_applied = (
-                apply_structured_target_occlusion(
+            augmentation = apply_structured_target_occlusion(
                     search_img,
                     search_bbox,
                     probability=occlusion_probability,
                     min_area_ratio=self.cfg.DATA.SEARCH.VDRM_OCCLUSION_MIN_RATIO,
                     max_area_ratio=self.cfg.DATA.SEARCH.VDRM_OCCLUSION_MAX_RATIO,
                     part_grid=int(vdrm_cfg.NUM_PARTS ** 0.5),
+                    return_mask=bool(getattr(vdrm_cfg, 'DISCRIMINATIVE_ROUTE', False)),
                 )
-            )
+            search_img, visibility_target, visibility_applied = augmentation[:3]
+            if len(augmentation) == 4:
+                occlusion_mask = augmentation[3]
 
         box_mask_z = None
         ce_keep_rate = None
@@ -814,7 +818,8 @@ class OSTrackActor(BaseActor):
 
             ce_start_epoch = self.cfg.TRAIN.CE_START_EPOCH
             ce_warm_epoch = self.cfg.TRAIN.CE_WARM_EPOCH
-            ce_keep_rate = adjust_keep_rate(data['epoch'], warmup_epochs=ce_start_epoch,
+            if not getattr(self.cfg.TRAIN, 'VDRM_FROZEN_BASE_CONFIG', ''):
+                ce_keep_rate = adjust_keep_rate(data['epoch'], warmup_epochs=ce_start_epoch,
                                                 total_epochs=ce_start_epoch + ce_warm_epoch,
                                                 ITERS_PER_EPOCH=1,
                                                 base_keep_rate=self.cfg.MODEL.BACKBONE.CE_KEEP_RATIO[0])
@@ -831,10 +836,15 @@ class OSTrackActor(BaseActor):
         if visibility_target is not None:
             out_dict['vdrm_visibility_target'] = visibility_target
             out_dict['vdrm_visibility_applied'] = visibility_applied
+        if occlusion_mask is not None:
+            out_dict['disc_route_occlusion_mask'] = occlusion_mask
+        if audit:
+            out_dict['frozen_audit_inputs'] = dict(template=template_list, search=search_img,
+                ce_template_mask=box_mask_z, ce_keep_rate=ce_keep_rate, template_bbox=template_bbox)
 
         return out_dict
 
-    def compute_losses(self, pred_dict, gt_dict, return_status=True):
+    def compute_losses(self, pred_dict, gt_dict, return_status=True, return_components=False):
         # gt gaussian map
         gt_bbox = gt_dict['search_anno'][-1]  # (Ns, batch, 4) (x1,y1,w,h) -> (batch, 4)
         gt_gaussian_maps = generate_heatmap(gt_dict['search_anno'], self.cfg.DATA.SEARCH.SIZE, self.cfg.MODEL.BACKBONE.STRIDE)
@@ -987,7 +997,20 @@ class OSTrackActor(BaseActor):
                     gt_gaussian_maps.squeeze(1),
                     sample_valid=pred_dict.get('candidate_consensus_valid'),
                 )
-            if spatial_gate_mode in (
+            if getattr(vdrm_cfg, 'DISCRIMINATIVE_ROUTE', False):
+                part_route_loss, part_route_diagnostics = compute_discriminative_route_loss(
+                    pred_dict['discriminative_route_logits'], pred_dict['search_global_index'],
+                    gt_bbox, gt_gaussian_maps.shape[-2], gt_gaussian_maps.shape[-1],
+                    part_valid=pred_dict.get('part_valid'),
+                    part_visibility=pred_dict.get('vdrm_visibility_target'),
+                    occlusion_mask=pred_dict.get('disc_route_occlusion_mask'),
+                    padding_mask=gt_dict['search_att'][-1] if 'search_att' in gt_dict else None,
+                    distractor_boxes=gt_dict.get('vdrm_distractor_box'),
+                    distractor_applied=gt_dict.get('vdrm_distractor_applied'),
+                    hard_topk=self.cfg.TRAIN.VDRM_ROUTE_HARD_NEGATIVE_TOPK,
+                    negative_guard=self.cfg.TRAIN.VDRM_ROUTE_NEGATIVE_GUARD,
+                )
+            elif spatial_gate_mode in (
                 'part_aligned',
                 'part_aligned_consensus',
                 'part_aligned_guidance',
@@ -997,7 +1020,7 @@ class OSTrackActor(BaseActor):
                 'part_aligned_identity_aux',
                 'part_aligned_bidirectional',
                 'part_aligned_coherent_prototype',
-            ):
+            ) and not getattr(self.cfg.TRAIN, 'VDRM_FROZEN_BASE_CONFIG', ''):
                 required_route_outputs = {
                     'part_route_logits', 'search_global_index'
                 }
@@ -1047,7 +1070,8 @@ class OSTrackActor(BaseActor):
                 )
 
         # weighted sum
-        loss = self.loss_weight['giou'] * giou_loss + self.loss_weight['l1'] * l1_loss + self.loss_weight['focal'] * location_loss
+        tracking_loss = self.loss_weight['giou'] * giou_loss + self.loss_weight['l1'] * l1_loss + self.loss_weight['focal'] * location_loss
+        loss = tracking_loss
         if vdrm_enabled:
             loss = loss + aux_weight_scale * (
                 self.cfg.TRAIN.VDRM_VISIBILITY_WEIGHT * visibility_loss
@@ -1075,6 +1099,10 @@ class OSTrackActor(BaseActor):
                     "VDRM/reliability": pred_dict['visual_reliability'].detach().mean().item()
                     if 'visual_reliability' in pred_dict else 0.0,
                 })
+                if part_route_diagnostics is not None:
+                    for key, value in part_route_diagnostics.items():
+                        if key.startswith('disc_route_'):
+                            status['VDRM/' + key] = value.detach().item()
                 if 'candidate_target_reliability' in pred_dict:
                     status["VDRM/candidate_target_reliability"] = (
                         pred_dict['candidate_target_reliability']
@@ -1346,6 +1374,9 @@ class OSTrackActor(BaseActor):
                             'part_hard_negative_similarity'
                         ].detach().mean().item(),
                     })
+            if return_components:
+                return loss, status, dict(tracking=tracking_loss, route=part_route_loss,
+                    visibility=visibility_loss, rank=rank_loss, candidate=candidate_loss)
             return loss, status
         else:
             return loss

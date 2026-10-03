@@ -51,6 +51,11 @@ class OSTrack(BaseTracker):
         super(OSTrack, self).__init__(params)
         network = build_ostrack(params.cfg, training=False)
         checkpoint = torch.load(self.params.checkpoint, map_location='cpu', weights_only=False)
+        if params.cfg.TRAIN.VDRM_EXPERIMENT_ARM in ('rfreeze', 'rdisc'):
+            from lib.train.frozen_vdrm import validate_frozen_config, validate_frozen_checkpoint
+            validate_frozen_config(params.cfg)
+            validate_frozen_checkpoint(network, checkpoint, cfg=params.cfg,
+                                       expected_epoch=params.cfg.TEST.EPOCH)
         network.load_state_dict(checkpoint['net'], strict=True)
         alpha_override = getattr(self.params, "vdrm_alpha_override", None)
         alpha_values = _apply_vdrm_alpha_override(network, alpha_override)

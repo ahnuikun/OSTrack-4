@@ -1,4 +1,5 @@
 from easydict import EasyDict as edict
+from copy import deepcopy
 import yaml
 
 """
@@ -73,6 +74,10 @@ cfg.MODEL.VDRM.ALPHA_MAX = 0.0
 # ``False`` defines the Tclean identity control: alpha stays exactly zero and
 # the VDRM residual cannot alter the forward pass during retraining.
 cfg.MODEL.VDRM.TRAIN_ALPHA = True
+# Frozen-baseline Rdisc only. The legacy V8 path stays parameter-identical.
+cfg.MODEL.VDRM.DISCRIMINATIVE_ROUTE = False
+cfg.MODEL.VDRM.ROUTE_PROJECTION_DIM = 32
+cfg.MODEL.VDRM.ROUTE_HIDDEN_DIM = 64
 
 # MODEL.HEAD
 cfg.MODEL.HEAD = edict()
@@ -111,6 +116,11 @@ cfg.TRAIN.VDRM_AUX_WARMUP_EPOCHS = 20
 # or the model are built so a mislabeled run cannot silently start.
 cfg.TRAIN.VDRM_EXPERIMENT_ARM = ""
 cfg.TRAIN.VDRM_REQUIRED_SEED = None
+cfg.TRAIN.VDRM_FROZEN_BASE_CONFIG = ""
+cfg.TRAIN.VDRM_FROZEN_BASE_EPOCH = 300
+cfg.TRAIN.VDRM_FROZEN_SKIP_VAL = False
+cfg.TRAIN.VDRM_ROUTE_HARD_NEGATIVE_TOPK = 4
+cfg.TRAIN.VDRM_ROUTE_NEGATIVE_GUARD = 0.5
 # V17-only training switch. On applied HNCP samples, preserve V8's positive
 # route term while balancing the negative half equally between the pasted
 # same-class distractor and ordinary background. Inference is unchanged.
@@ -175,6 +185,13 @@ cfg.TEST.CHECKPOINT_CONFIG = ""
 cfg.TEST.VDRM_ALPHA_OVERRIDE = None
 # Test-only, checkpoint-compatible probes. Never applied by training.
 cfg.TEST.VDRM_INFERENCE_ABLATION = None
+
+_DEFAULT_CFG = deepcopy(cfg)
+
+
+def default_config():
+    """A fresh configuration, unaffected by previous YAML loads."""
+    return deepcopy(_DEFAULT_CFG)
 
 
 def _edict2dict(dest_dict, src_edict):

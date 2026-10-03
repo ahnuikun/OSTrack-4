@@ -32,12 +32,23 @@ class OSTrack(nn.Module):
         self.aux_loss = aux_loss
         self.head_type = head_type
         self.vdrm_enabled = vdrm_enabled
+        self.frozen_visual = False
         if head_type == "CORNER" or head_type == "CENTER":
             self.feat_sz_s = int(box_head.feat_sz)
             self.feat_len_s = int(box_head.feat_sz ** 2)
 
         if self.aux_loss:
             self.box_head = _get_clones(self.box_head, 6)
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.frozen_visual:
+            # Keep BN statistics, dropout and DropPath identical to Tclean
+            # inference. Do not use no_grad around the post-residual network.
+            self.backbone.eval()
+            self.box_head.eval()
+            self.backbone.vdrm.train(mode)
+        return self
 
     def forward(self, template: torch.Tensor,
                 search: torch.Tensor,
@@ -205,6 +216,10 @@ def build_ostrack(cfg, training=True):
         raise NotImplementedError
 
     backbone.finetune_track(cfg=cfg, patch_start_index=patch_start_index)
+    if vdrm_enabled and getattr(vdrm_cfg, 'DISCRIMINATIVE_ROUTE', False):
+        backbone.vdrm.enable_discriminative_route(
+            hidden_dim, vdrm_cfg.ROUTE_PROJECTION_DIM, vdrm_cfg.ROUTE_HIDDEN_DIM,
+        )
 
     box_head = build_box_head(cfg, hidden_dim)
 

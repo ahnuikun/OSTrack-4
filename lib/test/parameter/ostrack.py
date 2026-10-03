@@ -1,7 +1,7 @@
 from lib.test.utils import TrackerParams
 import os
 from lib.test.evaluation.environment import env_settings
-from lib.config.ostrack.config import cfg, update_config_from_file
+from lib.config.ostrack.config import default_config, update_config_from_file
 
 
 def parameters(yaml_name: str):
@@ -10,7 +10,8 @@ def parameters(yaml_name: str):
     save_dir = env_settings().save_dir
     # update default config from yaml file
     yaml_file = os.path.join(prj_dir, 'experiments/ostrack/%s.yaml' % yaml_name)
-    update_config_from_file(yaml_file)
+    cfg = default_config()
+    update_config_from_file(yaml_file, cfg)
     params.cfg = cfg
     print("test config: ", cfg)
 

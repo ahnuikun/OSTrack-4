@@ -8,6 +8,7 @@ their paired per-sequence scores instead of silently replacing one arm.
 import argparse
 import os
 import pickle
+import re
 import sys
 
 import numpy as np
@@ -30,7 +31,13 @@ def main():
                         help='Also print each sequence mean overlap.')
     parser.add_argument('--reference', required=True,
                         help='Config name used as the paired reference arm.')
+    parser.add_argument('--report_name', default='vdrm_module1_dev',
+                        help='Separate report directory; use vdrm_frozen_dev for new arms.')
+    parser.add_argument('--visibility_stages', action='store_true',
+                        help='Also save GT-defined visibility stages and paired recovery statistics.')
     args = parser.parse_args()
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', args.report_name):
+        parser.error('--report_name must be a simple directory name')
 
     dataset_name = 'got10k_vdrm_dev'
     dataset = get_dataset(dataset_name)
@@ -71,7 +78,7 @@ def main():
         )
     for name, (nested, flat) in layout_by_arm.items():
         print(f'{name}: {nested} nested + {flat} flat GOT-10k result files')
-    report_name = 'vdrm_module1_dev'
+    report_name = args.report_name
     print(f'Analyzing fixed GOT-10k VDRM dev: {len(dataset)}/152 sequences')
     print_results(trackers, dataset, report_name, merge_results=True,
                   plot_types=('success', 'norm_prec', 'prec'),
@@ -106,6 +113,10 @@ def main():
         print(f'{name} | {delta.mean():+.3f} | '
               f'[{bounds[0]:+.3f}, {bounds[1]:+.3f}] | '
               f'{improved}/{worsened}/{tied}')
+    if args.visibility_stages:
+        from lib.test.analysis.frozen_vdrm_stages import summarize_stages
+        summarize_stages(trackers, dataset, args.reference,
+                         os.path.join(env_settings().result_plot_path, report_name))
 
 
 if __name__ == '__main__':

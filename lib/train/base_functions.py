@@ -20,11 +20,13 @@ def validate_vdrm_experiment_contract(cfg, actual_seed=None):
     """Fail fast when a named clean-ablation arm is not actually clean."""
     arm = str(getattr(cfg.TRAIN, "VDRM_EXPERIMENT_ARM", "")).strip().lower()
     if not arm:
+        if getattr(cfg.TRAIN, 'VDRM_FROZEN_BASE_CONFIG', '') or getattr(cfg.MODEL.VDRM, 'DISCRIMINATIVE_ROUTE', False):
+            raise ValueError('frozen/discriminative options require a named Rfreeze/Rdisc arm')
         return
-    if arm not in {"tclean", "ronly"}:
+    if arm not in {"tclean", "ronly", "rfreeze", "rdisc"}:
         raise ValueError(
             "TRAIN.VDRM_EXPERIMENT_ARM must be empty, 'tclean', or "
-            f"'ronly', got {arm!r}"
+            f"'ronly', 'rfreeze', or 'rdisc', got {arm!r}"
         )
 
     required_seed = getattr(cfg.TRAIN, "VDRM_REQUIRED_SEED", None)
@@ -34,6 +36,13 @@ def validate_vdrm_experiment_contract(cfg, actual_seed=None):
         raise ValueError(
             f"{arm} requires seed={int(required_seed)}, got {actual_seed!r}"
         )
+
+    if arm in {'rfreeze', 'rdisc'}:
+        from .frozen_vdrm import validate_frozen_config
+        validate_frozen_config(cfg)
+        return
+    if getattr(cfg.TRAIN, 'VDRM_FROZEN_BASE_CONFIG', '') or getattr(cfg.MODEL.VDRM, 'DISCRIMINATIVE_ROUTE', False):
+        raise ValueError('Tclean/Ronly must not inherit frozen/discriminative configuration')
 
     vdrm_cfg = getattr(cfg.MODEL, "VDRM", None)
     if vdrm_cfg is None or not bool(vdrm_cfg.ENABLED):
@@ -209,6 +218,9 @@ def build_dataloaders(cfg, settings):
 
     loader_train = LTRLoader('train', dataset_train, training=True, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=shuffle,
                              num_workers=cfg.TRAIN.NUM_WORKER, drop_last=True, stack_dim=1, sampler=train_sampler)
+
+    if getattr(cfg.TRAIN, 'VDRM_FROZEN_SKIP_VAL', False):
+        return loader_train, None
 
     # Validation samplers and loaders
     dataset_val = sampler.TrackingSampler(datasets=names2datasets(cfg.DATA.VAL.DATASETS_NAME, settings, opencv_loader),

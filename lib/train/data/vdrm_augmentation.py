@@ -222,6 +222,7 @@ def apply_structured_target_occlusion(
     min_area_ratio: float = 0.2,
     max_area_ratio: float = 0.5,
     part_grid: int = 2,
+    return_mask: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Mask one contiguous rectangle inside each selected search target.
 
@@ -331,8 +332,9 @@ def apply_structured_target_occlusion(
             visibility_parts.append(visibility)
 
     part_visibility = torch.stack(visibility_parts, dim=-1)
-    return (
+    result = (
         occluded_images,
         part_visibility.to(dtype=dtype),
         applied,
     )
+    return result + (occlusion_mask,) if return_mask else result
