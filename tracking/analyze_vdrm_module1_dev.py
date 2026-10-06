@@ -21,12 +21,15 @@ from lib.test.analysis.plot_results import print_per_sequence_results, print_res
 from lib.test.evaluation import get_dataset, trackerlist
 from lib.test.evaluation.environment import env_settings
 from lib.test.evaluation.result_paths import result_bbox_path, resolve_result_bbox_path
+from lib.test.utils.load_text import load_text
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tracker_params', nargs='+', required=True,
                         help='Config names whose result TXT files already exist.')
+    parser.add_argument('--tracker_names', nargs='+',
+                        help='Tracker plugins parallel to --tracker_params; default: all ostrack.')
     parser.add_argument('--per_sequence', action='store_true',
                         help='Also print each sequence mean overlap.')
     parser.add_argument('--reference', required=True,
@@ -36,6 +39,13 @@ def main():
     parser.add_argument('--visibility_stages', action='store_true',
                         help='Also save GT-defined visibility stages and paired recovery statistics.')
     args = parser.parse_args()
+    tracker_names = args.tracker_names or ['ostrack'] * len(args.tracker_params)
+    if len(tracker_names) != len(args.tracker_params):
+        parser.error('--tracker_names must have the same length as --tracker_params')
+    if len(set(args.tracker_params)) != len(args.tracker_params):
+        parser.error('paired analysis requires unique parameter names')
+    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', n) for n in tracker_names):
+        parser.error('--tracker_names must contain simple plugin names')
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.report_name):
         parser.error('--report_name must be a simple directory name')
 
@@ -44,10 +54,10 @@ def main():
     if len(dataset) != 152:
         raise ValueError(f'Expected 152 fixed dev sequences, got {len(dataset)}')
     trackers = [
-        trackerlist(name='ostrack', parameter_name=name,
+        trackerlist(name=plugin, parameter_name=name,
                     dataset_name=dataset_name, run_ids=None,
                     display_name=name)[0]
-        for name in args.tracker_params
+        for plugin, name in zip(tracker_names, args.tracker_params)
     ]
     if args.reference not in args.tracker_params:
         parser.error('--reference must also appear in --tracker_params')
@@ -61,10 +71,15 @@ def main():
             path = resolve_result_bbox_path(tracker.results_dir, seq)
             if not os.path.isfile(path):
                 missing.append(path)
-            elif path == result_bbox_path(tracker.results_dir, seq):
-                nested += 1
             else:
-                flat += 1
+                prediction = np.atleast_2d(load_text(str(path), delimiter=('\t', ','), dtype=np.float64))
+                if (prediction.shape != seq.ground_truth_rect.shape or not np.isfinite(prediction).all()
+                        or (prediction[:, 2:] <= 0).any()):
+                    raise ValueError('invalid/incomplete paired predictions: ' + str(path))
+                if path == result_bbox_path(tracker.results_dir, seq):
+                    nested += 1
+                else:
+                    flat += 1
         layout_by_arm[tracker.parameter_name] = (nested, flat)
         if missing:
             missing_by_arm[tracker.parameter_name] = missing

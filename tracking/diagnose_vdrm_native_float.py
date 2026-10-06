@@ -168,14 +168,14 @@ def fork_tracker(tracker):
     return branch
 
 
-def prepare_cases(dataset):
+def prepare_cases(dataset, plan=None):
     if len(dataset) != 152:
         raise ValueError('requires the fixed 152-sequence training development split')
     by_name = {sequence.name: sequence for sequence in dataset}
     if len(by_name) != len(dataset):
         raise ValueError('duplicate development sequence names')
     cases = []
-    for name, bounds in AUDIT_PLAN.items():
+    for name, bounds in (AUDIT_PLAN if plan is None else plan).items():
         if name not in by_name:
             raise ValueError('missing registered development case: ' + name)
         sequence = by_name[name]

@@ -100,11 +100,17 @@ def state_hash(model):
     return visual_hash({'probe.' + n: v for n, v in model.state_dict().items()})
 
 
-def load_models(paths, device):
+def load_models(paths, device, arms=None):
+    # Tclean must be loaded first: every candidate is checked against its
+    # exact source checkpoint. Default remains the original three-arm audit.
+    arms = tuple(CONFIGS) if arms is None else tuple(arms)
+    if not arms or arms[0] != 'Tclean' or len(set(arms)) != len(arms) or any(a not in CONFIGS for a in arms):
+        raise ValueError('model arms must be unique registered names, with Tclean first')
     models, configs, provenance = {}, {}, {}
     source_hash = file_hash(paths['Tclean'])
     source_visual = None
-    for arm, name in CONFIGS.items():
+    for arm in arms:
+        name = CONFIGS[arm]
         cfg = config_for(name)
         checkpoint = torch.load(paths[arm], map_location='cpu', weights_only=False)
         model = build_ostrack(cfg, training=False)
