@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT))
 
 from lib.test.analysis.frozen_failure_diagnostics import dump_json, write_bundle
 from lib.test.analysis.frozen_vdrm_stages import visibility_protocol, recovery_delay
-from lib.test.analysis.response_probe import CONFIG, CONFIGS, FOCUS_PLAN, SELECTED_FRAMES, NATIVE_STEPS, check_bundle
+from lib.test.analysis.response_probe import CONFIG, CONFIGS, FOCUS_PLAN, PROFILES, protocol, check_bundle
 from lib.test.evaluation import get_dataset
 from lib.train.frozen_response import prepare_response_models, validate_response_checkpoint, baseline_hash
 from lib.train.frozen_vdrm import file_hash
@@ -24,11 +24,12 @@ from tracking.diagnose_vdrm_native_float import (
     assert_exact, input_hashes, save_inputs, npz_bytes)
 
 
-def focus_summary(trajectories):
+def focus_summary(trajectories, plan=None):
+    plan = FOCUS_PLAN if plan is None else plan
     cases = []
     for trace in trajectories:
         name = trace['sequence']
-        start, stop = FOCUS_PLAN[name]
+        start, stop = plan[name]
         cover, absence = np.asarray(trace['cover']), np.asarray(trace['absence'])
         masks, events = visibility_protocol(cover, absence)
         masks = dict(visible=(cover > 0) & (absence == 0), **masks)
@@ -51,7 +52,8 @@ def focus_summary(trajectories):
                 full_dev_gate_passed=False, cases=cases)
 
 
-def collect(cases, models):
+def collect(cases, models, profile='focus'):
+    plan, _, _ = protocol(profile)
     captures = {a: SpatialCapture() for a in CONFIGS}
     hooks = [models[a].backbone.vdrm.register_forward_hook(captures[a], with_kwargs=True) for a in CONFIGS]
     payloads, records, trajectories = {}, [], []
@@ -105,6 +107,14 @@ def collect(cases, models):
                                              ('score_map', 'size_map', 'offset_map')})
                                 maps['bypass_score_map'] = bypass['score_map'].cpu().numpy()
                                 maps['hann_window'] = candidate.output_window.cpu().numpy()
+                                if profile == 'early_failure':
+                                    kept = torch.ones_like(reference['score_map'], dtype=torch.bool)
+                                    for removed in snap['output']['removed_indexes_s']:
+                                        if removed is not None:
+                                            kept.flatten(1).scatter_(1, removed.long(), False)
+                                    maps['final_retained_mask'] = kept.cpu().numpy()
+                                    maps['search_padding_mask'] = np.asarray(snap['padding'], dtype=bool)
+                                    maps['Tclean_score_logits'] = reference['score_logits'].cpu().numpy()
                             payloads[maps_member] = npz_bytes(maps)
                             artifacts[arm] = dict(crop_member=crop_member, maps_member=maps_member,
                                                  bbox_xywh=rows[arm]['bbox_xywh'])
@@ -122,17 +132,20 @@ def collect(cases, models):
     payloads['records.json'] = dump_json(records)
     payloads['trajectories.json'] = dump_json(trajectories)
     payloads['focus_summary.json'] = dump_json(focus_summary(trajectories))
+    if profile != 'focus':
+        payloads['expanded_summary.json'] = dump_json(focus_summary(trajectories, plan))
     return payloads, records
 
 
-def run(save_dir, output, device):
+def run(save_dir, output, device, profile='focus'):
+    plan, selected_frames, native_steps = protocol(profile)
     if Path(output).exists():
         raise FileExistsError('refusing to overwrite response bundle: ' + str(output))
     paths = checkpoint_paths(save_dir)
     candidate_path = Path(save_dir) / 'checkpoints/train/ostrack' / CONFIG / 'OSTrack_ep0300.pth.tar'
     if not candidate_path.is_file():
         raise FileNotFoundError('Rresp checkpoint missing: ' + str(candidate_path))
-    cases = prepare_cases(get_dataset('got10k_vdrm_dev'), plan=FOCUS_PLAN)
+    cases = prepare_cases(get_dataset('got10k_vdrm_dev'), plan=plan)
     models, _, provenance = load_models(paths, torch.device(device))
     cfg = config_for(CONFIG)
     model, baseline, source = prepare_response_models(cfg, save_dir, CONFIG, candidate_path)
@@ -145,7 +158,7 @@ def run(save_dir, output, device):
     provenance['Rresp'] = dict(checkpoint_sha256=file_hash(candidate_path), source_sha256=file_hash(source),
         frozen_response_contract=model.frozen_response_contract, state_sha256_before=state_hash(model))
     try:
-        payloads, records = collect(cases, models)
+        payloads, records = collect(cases, models, profile)
     finally:
         for arm, model in models.items():
             after = state_hash(model)
@@ -153,18 +166,18 @@ def run(save_dir, output, device):
                     or any(m.training or any(p.requires_grad for p in m.parameters(recurse=False)) for m in model.modules())):
                 raise RuntimeError('response diagnostic changed state/mode or produced gradients: ' + arm)
             provenance[arm]['state_sha256_after'] = after
-    if len(records) != SELECTED_FRAMES:
+    if len(records) != selected_frames:
         raise RuntimeError('incomplete response focus records')
     manifest = dict(kind='vdrm_response_probe', version=1, dataset='got10k_vdrm_dev', configurations=CONFIGS,
-        plan={n: list(b) for n, b in FOCUS_PLAN.items()}, records=len(records), selected_frames=SELECTED_FRAMES,
-        native_tracking_steps=NATIVE_STEPS, optimizer_steps=0, provenance=provenance,
+        profile=profile, plan={n: list(b) for n, b in plan.items()}, records=len(records), selected_frames=selected_frames,
+        native_tracking_steps=native_steps, optimizer_steps=0, provenance=provenance,
         environment=dict(python=platform.python_version(), torch=torch.__version__, cuda=torch.version.cuda,
                          device=str(device)),
         protocol='Posthoc fixed training-dev cases, not held-out benchmark; native float closed loop from frame 1; '
                  'current GT is analysis-only; no optimizer; integrity pass is NOT performance/identity pass.')
     write_bundle(output, manifest, payloads)
     verified = check_bundle(output)
-    print(f'RRESP PROBE CHECK PASSED: {NATIVE_STEPS} native steps, {SELECTED_FRAMES} records; NOT a performance pass')
+    print(f'RRESP PROBE CHECK PASSED: {native_steps} native steps, {selected_frames} records; NOT a performance pass')
     print('Bundle:', Path(output).resolve())
     return verified
 
@@ -174,6 +187,8 @@ def main():
     parser.add_argument('--save_dir', default='./output')
     parser.add_argument('--output', help='New .tar.gz path; existing bundles are never overwritten')
     parser.add_argument('--check_bundle', help='Standalone integrity check; no GPU/data/weights required')
+    parser.add_argument('--profile', choices=tuple(PROFILES), default='focus',
+                        help='early_failure also saves the previously missing early failure frames')
     args = parser.parse_args()
     if args.check_bundle:
         verified = check_bundle(args.check_bundle)
@@ -181,8 +196,13 @@ def main():
         return
     if not torch.cuda.is_available():
         parser.error('native tracking requires CUDA')
-    output = args.output or str(Path(args.save_dir) / 'analysis/frozen_response/rresp_probe.tar.gz')
-    run(args.save_dir, output, 'cuda')
+    relative = ('analysis/frozen_response/rresp_probe.tar.gz' if args.profile == 'focus'
+                else 'analysis/frozen_response_early/rresp_early_probe.tar.gz')
+    output = args.output or str(Path(args.save_dir) / relative)
+    if args.profile == 'focus':
+        run(args.save_dir, output, 'cuda')
+    else:
+        run(args.save_dir, output, 'cuda', profile=args.profile)
 
 
 if __name__ == '__main__':
