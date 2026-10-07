@@ -19,14 +19,17 @@ _VDRM_AUXILIARY_WEIGHTS = (
 def validate_vdrm_experiment_contract(cfg, actual_seed=None):
     """Fail fast when a named clean-ablation arm is not actually clean."""
     arm = str(getattr(cfg.TRAIN, "VDRM_EXPERIMENT_ARM", "")).strip().lower()
+    response_enabled = getattr(cfg.MODEL, 'RESPONSE_RESIDUAL', {}).get('ENABLED', False)
+    if response_enabled and arm != 'rresp':
+        raise ValueError('response head requires the named Rresp arm')
     if not arm:
         if getattr(cfg.TRAIN, 'VDRM_FROZEN_BASE_CONFIG', '') or getattr(cfg.MODEL.VDRM, 'DISCRIMINATIVE_ROUTE', False):
             raise ValueError('frozen/discriminative options require a named Rfreeze/Rdisc arm')
         return
-    if arm not in {"tclean", "ronly", "rfreeze", "rdisc"}:
+    if arm not in {"tclean", "ronly", "rfreeze", "rdisc", "rresp"}:
         raise ValueError(
             "TRAIN.VDRM_EXPERIMENT_ARM must be empty, 'tclean', or "
-            f"'ronly', 'rfreeze', or 'rdisc', got {arm!r}"
+            f"'ronly', 'rfreeze', 'rdisc', or 'rresp', got {arm!r}"
         )
 
     required_seed = getattr(cfg.TRAIN, "VDRM_REQUIRED_SEED", None)
@@ -37,6 +40,10 @@ def validate_vdrm_experiment_contract(cfg, actual_seed=None):
             f"{arm} requires seed={int(required_seed)}, got {actual_seed!r}"
         )
 
+    if arm == 'rresp':
+        from .frozen_response import validate_response_config
+        validate_response_config(cfg)
+        return
     if arm in {'rfreeze', 'rdisc'}:
         from .frozen_vdrm import validate_frozen_config
         validate_frozen_config(cfg)

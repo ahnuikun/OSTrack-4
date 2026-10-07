@@ -1,0 +1,120 @@
+"""Fixed five-case Rresp protocol and model-free bundle verification."""
+
+import hashlib
+import io
+import json
+from pathlib import PurePosixPath
+import tarfile
+
+import numpy as np
+
+from .frozen_failure_diagnostics import CONFIGS as BASE_CONFIGS
+from .native_float_audit import array_hash
+from .rscore_probe import FOCUS_PLAN
+
+CONFIG = 'vitb_256_mae_ce_vdrm_rresp_s42_32x4_ep300'
+CONFIGS = dict(BASE_CONFIGS, Rresp=CONFIG)
+SELECTED_FRAMES = sum(stop - start + 1 for start, stop in FOCUS_PLAN.values())
+NATIVE_STEPS = sum(stop - 1 for _, stop in FOCUS_PLAN.values()) * len(CONFIGS)
+
+
+def check_bundle(path):
+    with tarfile.open(path, 'r:gz') as archive:
+        members = archive.getmembers()
+        names = [m.name for m in members]
+        if (len(set(names)) != len(names) or any(not m.isfile() for m in members)
+                or any(PurePosixPath(n).is_absolute() or '..' in PurePosixPath(n).parts or '\\' in n for n in names)):
+            raise ValueError('unsafe/duplicate response bundle members')
+        manifest = json.load(archive.extractfile('manifest.json'))
+        if (manifest.get('version') != 1 or manifest.get('kind') != 'vdrm_response_probe'
+                or manifest.get('dataset') != 'got10k_vdrm_dev' or manifest.get('configurations') != CONFIGS
+                or manifest.get('plan') != {n: list(b) for n, b in FOCUS_PLAN.items()}
+                or manifest.get('records') != SELECTED_FRAMES or manifest.get('selected_frames') != SELECTED_FRAMES
+                or manifest.get('native_tracking_steps') != NATIVE_STEPS or manifest.get('optimizer_steps') != 0):
+            raise ValueError('wrong Rresp protocol/counts')
+        expected = manifest['members_sha256']
+        if set(names) != set(expected) | {'manifest.json'}:
+            raise ValueError('response bundle member set differs')
+        contents = {}
+        # One archive-order pass; never repeatedly rewind/decompress gzip.
+        for member in members:
+            if member.name == 'manifest.json':
+                continue
+            data = archive.extractfile(member).read()
+            if hashlib.sha256(data).hexdigest() != expected[member.name]:
+                raise ValueError('response bundle checksum mismatch: ' + member.name)
+            if member.name.endswith(('.json', '.npz')):
+                contents[member.name] = data
+        for arm in CONFIGS:
+            p = manifest['provenance'][arm]
+            if p['state_sha256_before'] != p['state_sha256_after']:
+                raise ValueError('response probe changed model state: ' + arm)
+        traces = json.loads(contents['trajectories.json'])
+        if len(traces) != len(FOCUS_PLAN) or {t['sequence'] for t in traces} != set(FOCUS_PLAN):
+            raise ValueError('wrong response trajectory set')
+        indexed = {}
+        for trace in traces:
+            name = trace['sequence']
+            stop = FOCUS_PLAN[name][1]
+            if (len(trace['gt_xywh']) != stop or len(trace['cover']) != stop or len(trace['absence']) != stop
+                    or len(trace['source_frames']) != stop or set(trace['native']) != set(CONFIGS)):
+                raise ValueError('incomplete response source history')
+            for arm, rows in trace['native'].items():
+                if len(rows) != stop or [r['frame_1based'] for r in rows] != list(range(1, stop + 1)):
+                    raise ValueError('incomplete response trajectory')
+                if rows[0]['bbox_xywh'] != trace['gt_xywh'][0]:
+                    raise ValueError('wrong response initialization')
+                for index, row in enumerate(rows):
+                    box = np.asarray(row['bbox_xywh'])
+                    if box.shape != (4,) or not np.isfinite(box).all() or (box[2:] <= 0).any():
+                        raise ValueError('invalid response float bbox')
+                    if index and (row['anchor_xywh'] != rows[index - 1]['bbox_xywh'] or not row['exact_replay']):
+                        raise ValueError('broken response closed-loop history')
+                    indexed[name, row['frame_1based'], arm] = row
+        records = json.loads(contents['records.json'])
+        keys = {(n, f) for n, (start, stop) in FOCUS_PLAN.items() for f in range(start, stop + 1)}
+        actual = [(r['sequence'], r['frame_1based']) for r in records]
+        if len(actual) != len(set(actual)) or set(actual) != keys:
+            raise ValueError('missing/duplicate selected response frames')
+        for record in records:
+            name, frame = record['sequence'], record['frame_1based']
+            if not record['bypass_exact'] or not record['frozen_regression_exact'] or set(record['arms']) != set(CONFIGS):
+                raise ValueError('invalid response isolation proof')
+            if record['image_member'] not in expected:
+                raise ValueError('missing response original image')
+            for arm, item in record['arms'].items():
+                if item['crop_member'] not in expected or item['maps_member'] not in contents:
+                    raise ValueError('missing response crop/maps')
+                if item['bbox_xywh'] != indexed[name, frame, arm]['bbox_xywh']:
+                    raise ValueError('response map/native bbox mismatch')
+                with np.load(io.BytesIO(contents[item['maps_member']]), allow_pickle=False) as maps:
+                    if any(not np.isfinite(maps[k]).all() for k in maps.files):
+                        raise ValueError('non-finite response maps')
+                    score = maps['score_map']
+                    if (score.shape != (1, 1, 16, 16) or maps['size_map'].shape != (1, 2, 16, 16)
+                            or maps['offset_map'].shape != maps['size_map'].shape):
+                        raise ValueError('wrong response map shape')
+                    if arm == 'Rresp':
+                        if not np.array_equal(maps['bypass_score_map'], maps['Tclean_score_map']):
+                            raise ValueError('response bypass score differs')
+                        for key in ('size_map', 'offset_map'):
+                            if not np.array_equal(maps[key], maps['Tclean_' + key]):
+                                raise ValueError('response changed frozen regression: ' + key)
+                        peak = np.argmax(maps['hann_window'] * score)
+                        same = peak == np.argmax(maps['hann_window'] * maps['Tclean_score_map'])
+                        if bool(same) != record['same_hann_peak']:
+                            raise ValueError('wrong response same-peak assertion')
+                        if np.abs(maps['response_delta_logits']).max() > 2.000001:
+                            raise ValueError('response correction exceeded preregistered bound')
+            candidate = indexed[name, frame, 'Rresp']
+            if record['same_hann_peak'] and record['base_samecrop_bbox'] != candidate['bbox_xywh']:
+                raise ValueError('same-peak response changed regression bbox')
+            if record['bypass_bbox'] != record['base_samecrop_bbox']:
+                raise ValueError('response bypass changed decoded bbox')
+            with np.load(io.BytesIO(contents[record['inputs_member']]), allow_pickle=False) as inputs:
+                if set(inputs.files) != {k for k, v in candidate['input_sha256'].items() if v is not None}:
+                    raise ValueError('wrong response actual input keys')
+                for key in inputs.files:
+                    if array_hash(inputs[key]) != candidate['input_sha256'][key]:
+                        raise ValueError('response actual input hash differs: ' + key)
+    return manifest

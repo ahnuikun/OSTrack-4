@@ -18,6 +18,8 @@ import importlib
 
 from ..utils.focal_loss import FocalLoss
 from .frozen_vdrm import is_frozen_run, prepare_frozen_models, audit_training_loader
+from .frozen_response import (is_response_run, prepare_response_models, audit_response_loader,
+                             make_response_actor, assert_response_optimizer)
 
 
 def run(settings):
@@ -49,11 +51,14 @@ def run(settings):
     settings.log_file = os.path.join(log_dir, "%s-%s.log" % (settings.script_name, settings.config_name))
 
     frozen = is_frozen_run(cfg)
-    if frozen:
+    response = is_response_run(cfg)
+    isolated = frozen or response
+    if isolated:
         import torch.distributed as dist
         if settings.local_rank == -1 or dist.get_world_size() != 4:
-            raise ValueError('Rfreeze/Rdisc formal training requires --mode multiple --nproc_per_node 4')
-        net, frozen_baseline, source_path = prepare_frozen_models(
+            raise ValueError('Frozen formal training requires --mode multiple --nproc_per_node 4')
+        prepare = prepare_response_models if response else prepare_frozen_models
+        net, frozen_baseline, source_path = prepare(
             cfg, settings.save_dir, settings.config_name,
         )
         if settings.local_rank == 0:
@@ -66,17 +71,18 @@ def run(settings):
         cfg.ckpt_dir = settings.save_dir
 
     # Create network
-    if settings.script_name == "ostrack" and not frozen:
+    if settings.script_name == "ostrack" and not isolated:
         net = build_ostrack(cfg)
     elif settings.script_name != 'ostrack':
         raise ValueError("illegal script name")
 
     # wrap networks to distributed one
     net.cuda()
-    if frozen:
+    if isolated:
         frozen_baseline.cuda()
         report_path = os.path.join(log_dir, settings.config_name + '-frozen-preflight.json') if settings.local_rank == 0 else None
-        result = audit_training_loader(net, frozen_baseline, cfg, loader_train, report_path)
+        audit = audit_response_loader if response else audit_training_loader
+        result = audit(net, frozen_baseline, cfg, loader_train, report_path)
         if settings.local_rank == 0:
             print('FROZEN PREFLIGHT PASSED (actual training minibatch, no optimizer step):', result)
         del frozen_baseline
@@ -95,7 +101,8 @@ def run(settings):
         focal_loss = FocalLoss()
         objective = {'giou': giou_loss, 'l1': l1_loss, 'focal': focal_loss, 'cls': BCEWithLogitsLoss()}
         loss_weight = {'giou': cfg.TRAIN.GIOU_WEIGHT, 'l1': cfg.TRAIN.L1_WEIGHT, 'focal': 1., 'cls': 1.0}
-        actor = OSTrackActor(net=net, objective=objective, loss_weight=loss_weight, settings=settings, cfg=cfg)
+        actor = (make_response_actor(net, cfg) if response else
+                 OSTrackActor(net=net, objective=objective, loss_weight=loss_weight, settings=settings, cfg=cfg))
     else:
         raise ValueError("illegal script name")
 
@@ -104,9 +111,11 @@ def run(settings):
 
     # Optimizer, parameters, and learning rates
     optimizer, lr_scheduler = get_optimizer_scheduler(net, cfg)
+    if response:
+        assert_response_optimizer(net, optimizer)
     use_amp = getattr(cfg.TRAIN, "AMP", False)
     loaders = [loader_train] + ([loader_val] if loader_val is not None else [])
     trainer = LTRTrainer(actor, loaders, optimizer, settings, lr_scheduler, use_amp=use_amp)
 
     # train process
-    trainer.train(cfg.TRAIN.EPOCH, load_latest=True, fail_safe=not frozen)
+    trainer.train(cfg.TRAIN.EPOCH, load_latest=True, fail_safe=not isolated)

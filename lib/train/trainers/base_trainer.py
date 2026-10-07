@@ -136,6 +136,11 @@ class BaseTrainer:
             if visual_hash(state['net']) != net.frozen_vdrm_contract['visual_sha256']:
                 raise RuntimeError('refusing to save modified frozen visual weights/buffers')
             state['frozen_vdrm_contract'] = net.frozen_vdrm_contract
+        if hasattr(net, 'frozen_response_contract'):
+            from lib.train.frozen_response import baseline_hash
+            if baseline_hash(state['net']) != net.frozen_response_contract['baseline_sha256']:
+                raise RuntimeError('refusing to save modified Rresp baseline weights/buffers')
+            state['frozen_response_contract'] = net.frozen_response_contract
 
         directory = '{}/{}'.format(self._checkpoint_dir, self.settings.project_path)
         print(directory)
@@ -201,6 +206,9 @@ class BaseTrainer:
         if hasattr(net, 'frozen_vdrm_contract'):
             from lib.train.frozen_vdrm import validate_frozen_checkpoint
             validate_frozen_checkpoint(net, checkpoint_dict, expected=net.frozen_vdrm_contract)
+        if hasattr(net, 'frozen_response_contract'):
+            from lib.train.frozen_response import validate_response_checkpoint
+            validate_response_checkpoint(net, checkpoint_dict, expected=net.frozen_response_contract)
 
         assert net_type == checkpoint_dict['net_type'], 'Network is not of correct type.'
 

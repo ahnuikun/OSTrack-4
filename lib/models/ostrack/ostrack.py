@@ -33,6 +33,8 @@ class OSTrack(nn.Module):
         self.head_type = head_type
         self.vdrm_enabled = vdrm_enabled
         self.frozen_visual = False
+        self.frozen_response = False
+        self.response_residual_disabled = False
         if head_type == "CORNER" or head_type == "CENTER":
             self.feat_sz_s = int(box_head.feat_sz)
             self.feat_len_s = int(box_head.feat_sz ** 2)
@@ -42,13 +44,27 @@ class OSTrack(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        if self.frozen_visual:
+        if self.frozen_response:
+            self.backbone.eval()
+            self.box_head.eval()
+        elif self.frozen_visual:
             # Keep BN statistics, dropout and DropPath identical to Tclean
             # inference. Do not use no_grad around the post-residual network.
             self.backbone.eval()
             self.box_head.eval()
             self.backbone.vdrm.train(mode)
         return self
+
+    def enable_response_residual(self, embed_dim, config):
+        from lib.models.layers.response_residual import ResponseResidual
+        if self.head_type != 'CENTER' or not self.vdrm_enabled:
+            raise ValueError('Rresp requires the registered VDRM CENTER architecture')
+        self.response_residual = ResponseResidual(embed_dim, config.PROJECTION_DIM,
+                                                  config.HIDDEN_DIM, config.MAX_DELTA_LOGIT)
+        self.frozen_response = True
+        for name, parameter in self.named_parameters():
+            parameter.requires_grad_(name.startswith('response_residual.'))
+        self.train(self.training)
 
     def forward(self, template: torch.Tensor,
                 search: torch.Tensor,
@@ -57,17 +73,32 @@ class OSTrack(nn.Module):
                 template_bbox=None,
                 return_last_attn=False,
                 ):
-        x, aux_dict = self.backbone(z=template, x=search,
-                                    ce_template_mask=ce_template_mask,
-                                    ce_keep_rate=ce_keep_rate,
-                                    template_bbox=template_bbox,
-                                    return_last_attn=return_last_attn, )
+        # Frozen Rresp is an explicit graph boundary, not merely an optimizer
+        # exclusion. Legacy residual experiments retain their original graph.
+        with torch.set_grad_enabled(torch.is_grad_enabled() and not self.frozen_response):
+            x, aux_dict = self.backbone(z=template, x=search,
+                                       ce_template_mask=ce_template_mask,
+                                       ce_keep_rate=ce_keep_rate,
+                                       template_bbox=template_bbox,
+                                       return_last_attn=return_last_attn)
 
-        # Forward head
-        feat_last = x
-        if isinstance(x, list):
-            feat_last = x[-1]
-        out = self.forward_head(feat_last, None)
+            # Frozen visual decoding is also outside the correction graph.
+            feat_last = x[-1] if isinstance(x, list) else x
+            out = self.forward_head(feat_last, None)
+
+        if self.frozen_response and not self.response_residual_disabled:
+            delta = self.response_residual(feat_last, out['score_logits'], template_bbox)
+            retained = torch.ones(delta.shape[0], self.feat_len_s, device=delta.device, dtype=torch.bool)
+            for indices in aux_dict.get('removed_indexes_s', ()):
+                if indices is not None:
+                    retained.scatter_(1, indices.long(), False)
+            delta = delta * retained.view_as(delta)
+            out['response_base_score_map'] = out['score_map']
+            out['response_delta_logits'] = delta
+            out['score_logits'] = out['score_logits'].detach() + delta
+            out['score_map'] = out['score_logits'].sigmoid().clamp(1e-4, 1 - 1e-4)
+            out['pred_boxes'] = self.box_head.cal_bbox(out['score_map'], out['size_map'],
+                                                       out['offset_map']).view(-1, 1, 4)
 
         candidate_map = aux_dict.get('candidate_reliability_map')
         score_map = out.get('score_map')
@@ -230,6 +261,12 @@ def build_ostrack(cfg, training=True):
         head_type=cfg.MODEL.HEAD.TYPE,
         vdrm_enabled=vdrm_enabled,
     )
+
+    response_cfg = getattr(cfg.MODEL, 'RESPONSE_RESIDUAL', None)
+    if response_cfg is not None and response_cfg.ENABLED:
+        if cfg.TRAIN.VDRM_EXPERIMENT_ARM != 'rresp':
+            raise ValueError('response residual requires the named Rresp arm')
+        model.enable_response_residual(hidden_dim, response_cfg)
 
     if 'OSTrack' in cfg.MODEL.PRETRAIN_FILE and training:
         checkpoint = torch.load(cfg.MODEL.PRETRAIN_FILE, map_location="cpu", weights_only=False)

@@ -231,6 +231,14 @@ def update_config_from_file(filename, base_cfg=None):
     exp_config = None
     with open(filename) as f:
         exp_config = edict(yaml.safe_load(f))
+        target = base_cfg if base_cfg is not None else cfg
+        # Opt-in schema: unconditional defaults would invalidate the hashes
+        # stored in already-trained Rfreeze/Rdisc checkpoint contracts.
+        if any('RESPONSE_RESIDUAL' in exp_config.get(section, {}) for section in ('MODEL', 'TRAIN')):
+            target.MODEL.RESPONSE_RESIDUAL = edict(ENABLED=False, PROJECTION_DIM=32,
+                HIDDEN_DIM=64, MAX_DELTA_LOGIT=2.0)
+            target.TRAIN.RESPONSE_RESIDUAL = edict(FOCAL_WEIGHT=1.0, RANK_WEIGHT=0.5,
+                RANK_MARGIN=0.2, HARD_NEGATIVE_TOPK=4, NEGATIVE_GUARD_CELLS=1.0)
         if base_cfg is not None:
             _update_config(base_cfg, exp_config)
         else:
