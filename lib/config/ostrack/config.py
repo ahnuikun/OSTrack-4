@@ -239,6 +239,12 @@ def update_config_from_file(filename, base_cfg=None):
                 HIDDEN_DIM=64, MAX_DELTA_LOGIT=2.0)
             target.TRAIN.RESPONSE_RESIDUAL = edict(FOCAL_WEIGHT=1.0, RANK_WEIGHT=0.5,
                 RANK_MARGIN=0.2, HARD_NEGATIVE_TOPK=4, NEGATIVE_GUARD_CELLS=1.0)
+            if exp_config.get('TRAIN', {}).get('VDRM_EXPERIMENT_ARM') == 'rqual':
+                # Keep the already-trained Rresp schema/hash exactly unchanged.
+                target.MODEL.RESPONSE_RESIDUAL.update(TYPE='candidate_quality', ROI_GRID_SIZE=3)
+                target.TRAIN.RESPONSE_RESIDUAL = edict(QUALITY_WEIGHT=1., RANK_WEIGHT=.5,
+                    PRESERVE_WEIGHT=.5, ABSTAIN_WEIGHT=.1, POSITIVE_IOU=.5, NEGATIVE_IOU=.1,
+                    PROTECT_IOU_GAP=.05, RANK_MARGIN=.2, HARD_NEGATIVE_TOPK=4)
         if base_cfg is not None:
             _update_config(base_cfg, exp_config)
         else:

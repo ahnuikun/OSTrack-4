@@ -59,8 +59,14 @@ class OSTrack(nn.Module):
         from lib.models.layers.response_residual import ResponseResidual
         if self.head_type != 'CENTER' or not self.vdrm_enabled:
             raise ValueError('Rresp requires the registered VDRM CENTER architecture')
-        self.response_residual = ResponseResidual(embed_dim, config.PROJECTION_DIM,
-                                                  config.HIDDEN_DIM, config.MAX_DELTA_LOGIT)
+        self.response_quality = getattr(config, 'TYPE', 'logit') == 'candidate_quality'
+        if self.response_quality:
+            from lib.models.layers.candidate_quality import CandidateQuality
+            self.response_residual = CandidateQuality(embed_dim, config.PROJECTION_DIM, config.HIDDEN_DIM,
+                                                       config.ROI_GRID_SIZE, config.MAX_DELTA_LOGIT)
+        else:
+            self.response_residual = ResponseResidual(embed_dim, config.PROJECTION_DIM,
+                                                      config.HIDDEN_DIM, config.MAX_DELTA_LOGIT)
         self.frozen_response = True
         for name, parameter in self.named_parameters():
             parameter.requires_grad_(name.startswith('response_residual.'))
@@ -87,16 +93,22 @@ class OSTrack(nn.Module):
             out = self.forward_head(feat_last, None)
 
         if self.frozen_response and not self.response_residual_disabled:
-            delta = self.response_residual(feat_last, out['score_logits'], template_bbox)
-            retained = torch.ones(delta.shape[0], self.feat_len_s, device=delta.device, dtype=torch.bool)
+            retained = torch.ones(feat_last.shape[0], self.feat_len_s, device=feat_last.device, dtype=torch.bool)
             for indices in aux_dict.get('removed_indexes_s', ()):
                 if indices is not None:
                     retained.scatter_(1, indices.long(), False)
-            delta = delta * retained.view_as(delta)
             out['response_base_score_map'] = out['score_map']
-            out['response_delta_logits'] = delta
-            out['score_logits'] = out['score_logits'].detach() + delta
-            out['score_map'] = out['score_logits'].sigmoid().clamp(1e-4, 1 - 1e-4)
+            if self.response_quality:
+                from lib.models.layers.candidate_quality import apply_energy_correction
+                out.update(self.response_residual(feat_last, out['score_logits'], out['size_map'],
+                    out['offset_map'], template_bbox, retained))
+                out['score_map'] = apply_energy_correction(out['score_map'], out['response_delta_energy'])
+            else:
+                delta = self.response_residual(feat_last, out['score_logits'], template_bbox)
+                delta = delta * retained.view_as(delta)
+                out['response_delta_logits'] = delta
+                out['score_logits'] = out['score_logits'].detach() + delta
+                out['score_map'] = out['score_logits'].sigmoid().clamp(1e-4, 1 - 1e-4)
             out['pred_boxes'] = self.box_head.cal_bbox(out['score_map'], out['size_map'],
                                                        out['offset_map']).view(-1, 1, 4)
 
@@ -264,8 +276,8 @@ def build_ostrack(cfg, training=True):
 
     response_cfg = getattr(cfg.MODEL, 'RESPONSE_RESIDUAL', None)
     if response_cfg is not None and response_cfg.ENABLED:
-        if cfg.TRAIN.VDRM_EXPERIMENT_ARM != 'rresp':
-            raise ValueError('response residual requires the named Rresp arm')
+        if cfg.TRAIN.VDRM_EXPERIMENT_ARM not in ('rresp', 'rqual'):
+            raise ValueError('response residual requires a named Rresp/Rqual arm')
         model.enable_response_residual(hidden_dim, response_cfg)
 
     if 'OSTrack' in cfg.MODEL.PRETRAIN_FILE and training:

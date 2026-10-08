@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .response_probe import CONFIGS, check_bundle
+from .response_probe import CONFIGS, check_bundle, model_protocol
 from lib.models.layers.head import CenterPredictor
 from lib.test.tracker.ostrack import OSTrack
 from lib.train.data.processing_utils import transform_image_to_crop
@@ -54,12 +54,12 @@ def _peak_result(index, ious, boxes):
                 iou=None if ious is None else float(ious[index]), bbox_xywh=boxes[index].tolist())
 
 
-def analyze_frame(record, trace, maps_by_arm, shape):
+def analyze_frame(record, trace, maps_by_arm, shape, candidate_arm='Rresp'):
     frame = record['frame_1based']
     gt = np.asarray(trace['gt_xywh'][frame - 1], dtype=float)
     valid_gt = bool((gt[2:] > 0).all())
     visible = bool(valid_gt and trace['cover'][frame - 1] > 0 and trace['absence'][frame - 1] == 0)
-    response_maps = maps_by_arm['Rresp']
+    response_maps = maps_by_arm[candidate_arm]
     hann = response_maps['hann_window']
     if hann.shape != (1, 1, 16, 16) or not np.isfinite(hann).all() or (hann < 0).any() or hann.max() <= 0:
         raise ValueError('invalid native Hann window')
@@ -84,33 +84,38 @@ def analyze_frame(record, trace, maps_by_arm, shape):
             peak_xy=[peak % 16, peak // 16], decode_error_pixels=error,
             oracle_max_iou=float(ious.max()) if valid_gt else None,
             candidates_iou_ge_0_5=int((ious >= .5).sum()) if valid_gt else None)
-        if arm == 'Rresp':
+        if arm == candidate_arm:
             response_boxes, response_ious = boxes, ious
 
-    row = trace['native']['Rresp'][frame - 1]
+    row = trace['native'][candidate_arm][frame - 1]
     maps, boxes, ious = response_maps, response_boxes, response_ious
-    base, score, delta = maps['Tclean_score_map'], maps['score_map'], maps['response_delta_logits']
+    quality_head = candidate_arm == 'Rqual'
+    delta_key = 'response_delta_energy' if quality_head else 'response_delta_logits'
+    base, score, delta = maps['Tclean_score_map'], maps['score_map'], maps[delta_key]
     base_peak, peak = int((base * hann).argmax()), int((score * hann).argmax())
     if np.max(np.abs(boxes[base_peak] - record['base_samecrop_bbox'])) > DECODE_TOLERANCE_PIXELS:
         raise ValueError('same-crop Tclean decode differs from saved box')
     if not np.array_equal(base, maps['response_base_score_map']):
         raise ValueError('response base score is not same-crop Tclean')
-    base_logits = maps.get('Tclean_score_logits', maps['score_logits'] - delta)
+    base_logits = maps['score_logits'] if quality_head else maps.get('Tclean_score_logits', maps['score_logits'] - delta)
+    expected_score = base * np.exp(delta - delta.max()) if quality_head else _sigmoid(maps['score_logits'])
     if (not np.allclose(_sigmoid(base_logits), base, rtol=0, atol=2e-6)
-            or not np.allclose(_sigmoid(maps['score_logits']), score, rtol=0, atol=2e-6)):
+            or not np.allclose(expected_score, score, rtol=0, atol=2e-6)):
         raise ValueError('saved logits do not reproduce score maps')
-    samecrop = dict(Tclean=_peak_result(base_peak, ious, boxes), Rresp=_peak_result(peak, ious, boxes),
+    samecrop = dict(Tclean=_peak_result(base_peak, ious, boxes), **{candidate_arm: _peak_result(peak, ious, boxes)},
         same_peak=base_peak == peak, delta_at_Tclean_peak=float(delta.flat[base_peak]),
-        delta_at_Rresp_peak=float(delta.flat[peak]),
         base_windowed_at_Tclean_peak=float((base * hann).flat[base_peak]),
-        base_windowed_at_Rresp_peak=float((base * hann).flat[peak]),
-        corrected_windowed_at_Tclean_peak=float((score * hann).flat[base_peak]),
-        corrected_windowed_at_Rresp_peak=float((score * hann).flat[peak]))
+        corrected_windowed_at_Tclean_peak=float((score * hann).flat[base_peak]))
+    samecrop['delta_at_' + candidate_arm + '_peak'] = float(delta.flat[peak])
+    samecrop['base_windowed_at_' + candidate_arm + '_peak'] = float((base * hann).flat[peak])
+    samecrop['corrected_windowed_at_' + candidate_arm + '_peak'] = float((score * hann).flat[peak])
     # These controls depend only on saved predictions, never on GT selection.
     controls = {
         'uniform_plus2_all_logits': int((_sigmoid(base_logits + 2.) * hann).argmax()),
         'delta_in_final_log_energy': energy_peak(base, hann, delta),
     }
+    if quality_head:
+        controls = {'zero_correction': base_peak}
     kept = maps.get('final_retained_mask')
     active = delta.flatten() != 0
     delta_stats = dict(nonzero_cells=int(active.sum()), actual_retained_mask_available=kept is not None,
@@ -120,7 +125,8 @@ def analyze_frame(record, trace, maps_by_arm, shape):
         retained = kept.flatten()
         common = float(delta.flatten()[retained].mean()) if retained.any() else 0.
         centered = delta - np.asarray(common, dtype=np.float32) * kept
-        controls['remove_retained_mean_in_logits'] = int((_sigmoid(base_logits + centered) * hann).argmax())
+        if not quality_head:
+            controls['remove_retained_mean_in_logits'] = int((_sigmoid(base_logits + centered) * hann).argmax())
         delta_stats.update(retained_cells=int(retained.sum()), mean_delta_retained=common)
     result['same_crop'] = samecrop
     result['delta'] = delta_stats
@@ -151,13 +157,22 @@ def analyze_frame(record, trace, maps_by_arm, shape):
         good_candidates=int((ious >= .5).sum()) if valid_gt else None,
         retained_good_candidates=int(((ious >= .5) & retained).sum()) if valid_gt and kept is not None else None)
     result['frozen_candidate_oracle'] = oracle
+    if quality_head:
+        valid = maps['candidate_valid_mask'].flatten()
+        predicted = torch.from_numpy(maps['candidate_quality_logits']).sigmoid().numpy().flatten()
+        result['candidate_quality'] = dict(valid_candidates=int(valid.sum()),
+            predicted_quality_at_selected=float(predicted[peak]),
+            predicted_quality_at_Tclean=float(predicted[base_peak]),
+            predicted_quality_at_oracle=float(predicted[ious.argmax()]) if valid_gt else None,
+            valid_good_candidates=int((valid & (ious >= .5)).sum()) if valid_gt else None,
+            note='Native image-clipped IoU for diagnosis; training uses normalized crop IoU. Not a calibrated reliability claim.')
     if not visible:
         category = 'not_visible_or_invalid_gt'
-    elif result['arms']['Rresp']['crop']['gt_fraction_in_visual_support'] == 0:
+    elif result['arms'][candidate_arm]['crop']['gt_fraction_in_visual_support'] == 0:
         category = 'target_outside_visual_crop'
     elif oracle['good_candidates'] == 0:
         category = 'no_frozen_candidate_iou_ge_0_5'
-    elif samecrop['Rresp']['iou'] < .5:
+    elif samecrop[candidate_arm]['iou'] < .5:
         category = 'good_candidate_exists_but_not_selected'
     else:
         category = 'selected_candidate_iou_ge_0_5'
@@ -170,33 +185,35 @@ def _first(rows, predicate):
 
 
 def summarize(traces, frames, manifest):
+    candidate_arm = manifest.get('candidate_arm', 'Rresp')
+    configs, _ = model_protocol(candidate_arm)
     cases = []
     for trace in traces:
         name = trace['sequence']
         selected = [r for r in frames if r['sequence'] == name]
         native = []
         for index in range(1, len(trace['gt_xywh'])):
-            a, b = (trace['native'][arm][index] for arm in ('Rresp', 'Tclean'))
+            a, b = (trace['native'][arm][index] for arm in (candidate_arm, 'Tclean'))
             visible = bool(trace['cover'][index] > 0 and trace['absence'][index] == 0
                            and (np.asarray(trace['gt_xywh'][index])[2:] > 0).all())
-            native.append(dict(frame_1based=index+1, visible=visible, Rresp_iou=a['iou'], Tclean_iou=b['iou'],
+            native.append(dict(frame_1based=index+1, visible=visible, candidate_iou=a['iou'], Tclean_iou=b['iou'],
                 bbox_changed=a['bbox_xywh'] != b['bbox_xywh'],
                 crop_changed=a['input_sha256']['search'] != b['input_sha256']['search']))
         first_change = _first(native, lambda r: r['bbox_changed'])
-        first_loss = _first(native, lambda r: r['visible'] and r['Rresp_iou'] < r['Tclean_iou'] - .05)
+        first_loss = _first(native, lambda r: r['visible'] and r['candidate_iou'] < r['Tclean_iou'] - .05)
         lookup = {r['frame_1based']: r for r in selected}
         events = dict(first_native_bbox_difference=first_change,
             first_native_crop_difference=_first(native, lambda r: r['crop_changed']),
             first_visible_native_loss_gt5pp=first_loss,
-            first_visible_native_iou_lt0_1=_first(native, lambda r: r['visible'] and r['Rresp_iou'] < .1),
+            first_visible_native_iou_lt0_1=_first(native, lambda r: r['visible'] and r['candidate_iou'] < .1),
             first_saved_visible_zero_visual_support=_first(selected, lambda r: r['visible'] and
-                r['arms']['Rresp']['crop']['gt_fraction_in_visual_support'] == 0),
+                r['arms'][candidate_arm]['crop']['gt_fraction_in_visual_support'] == 0),
             first_saved_visible_no_good_candidate=_first(selected, lambda r: r['visible'] and
                 r['frozen_candidate_oracle']['good_candidates'] == 0),
             first_saved_visible_good_candidate_missed=_first(selected, lambda r: r['candidate_status'] ==
                 'good_candidate_exists_but_not_selected'),
             first_saved_visible_samecrop_loss_gt5pp=_first(selected, lambda r: r['visible'] and
-                r['same_crop']['Rresp']['iou'] < r['same_crop']['Tclean']['iou'] - .05))
+                r['same_crop'][candidate_arm]['iou'] < r['same_crop']['Tclean']['iou'] - .05))
         event_evidence = {key: (dict(frame_1based=value, maps_saved=value in lookup,
             candidate_status=lookup[value]['candidate_status'] if value in lookup else None,
             same_crop=lookup[value]['same_crop'] if value in lookup else None,
@@ -210,16 +227,18 @@ def summarize(traces, frames, manifest):
         profile=manifest.get('profile', 'focus'), records=len(frames), optimizer_steps=0,
         gt_used_for_tracking=False, one_step_controls_are_closed_loop=False,
         automatic_identity_verdict=False, full_dev_gate_passed=False,
-        maximum_decode_error_pixels=max(r['arms'][a]['decode_error_pixels'] for r in frames for a in CONFIGS),
+        maximum_decode_error_pixels=max(r['arms'][a]['decode_error_pixels'] for r in frames for a in configs),
         original_focus_summary=focus_summary(traces), cases=cases)
 
 
 def render_report(summary):
-    lines = ['# Rresp early failure audit', '',
+    candidate_arm = summary.get('candidate_arm', 'Rresp')
+    configs, _ = model_protocol(candidate_arm)
+    lines = [f'# {candidate_arm} early failure audit', '',
         'Integrity and numerical analysis completed. This is NOT a performance or identity pass.', '',
         f"Profile: `{summary['profile']}`; saved frames: {summary['records']}; optimizer steps: 0.", '',
         'All frame numbers are 1-based. Candidate oracle uses GT only for offline evaluation.',
-        'Score controls are independent single-step calculations on the saved Rresp crop; '
+        f'Score controls are independent single-step calculations on the saved {candidate_arm} crop; '
         'they do not form a new closed-loop trajectory.', '',
         '| Sequence | Saved frames | First box change | First visible loss >5 pp | First saved crop miss | First saved no good box |',
         '| --- | --- | ---: | ---: | ---: | ---: |']
@@ -235,14 +254,14 @@ def render_report(summary):
     lines += ['', 'The first saved event need not be the first event in the full sequence. '
         'See event_evidence.maps_saved before attributing the first native loss to a mechanism.', '',
         '## Original five windows (AO %, not AUC)', '',
-        '| Sequence | Stage | Frames | Tclean | Rfreeze | Rdisc | Rresp |',
+        f'| Sequence | Stage | Frames | Tclean | Rfreeze | Rdisc | {candidate_arm} |',
         '| --- | --- | ---: | ---: | ---: | ---: | ---: |']
     for case in summary['original_focus_summary']['cases']:
         for stage, values in case['stages'].items():
             if stage == 'visible' or not values['frames']:
                 continue
             row = [case['sequence'], stage, str(values['frames'])]
-            row += [f"{values['ao_percent'][arm]:.4f}" for arm in CONFIGS]
+            row += [f"{values['ao_percent'][arm]:.4f}" for arm in configs]
             lines.append('| ' + ' | '.join(row) + ' |')
     lines += ['', '## Interpretation', '',
         '- Good frozen candidates exist but are missed: inspect identity and Hann-weighted ranking.',
@@ -257,6 +276,8 @@ def render_report(summary):
 
 def analyze_bundle(path):
     manifest, payloads, shapes = check_bundle(path, include_payloads=True)
+    candidate_arm = manifest.get('candidate_arm', 'Rresp')
+    configs, _ = model_protocol(candidate_arm)
     traces = json.loads(payloads['trajectories.json'])
     by_name = {trace['sequence']: trace for trace in traces}
     records = json.loads(payloads['records.json'])
@@ -279,9 +300,11 @@ def analyze_bundle(path):
     frames = []
     for record in records:
         maps_by_arm = {}
-        for arm in CONFIGS:
+        for arm in configs:
             with np.load(io.BytesIO(payloads[record['arms'][arm]['maps_member']]), allow_pickle=False) as maps:
                 maps_by_arm[arm] = {key: maps[key] for key in maps.files}
-        frames.append(analyze_frame(record, by_name[record['sequence']], maps_by_arm, shapes[record['image_member']]))
+        frames.append(analyze_frame(record, by_name[record['sequence']], maps_by_arm, shapes[record['image_member']], candidate_arm))
     summary = summarize(traces, frames, manifest)
+    if candidate_arm != 'Rresp':
+        summary['candidate_arm'] = candidate_arm
     return summary, frames, render_report(summary)

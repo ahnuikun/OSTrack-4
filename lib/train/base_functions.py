@@ -20,16 +20,16 @@ def validate_vdrm_experiment_contract(cfg, actual_seed=None):
     """Fail fast when a named clean-ablation arm is not actually clean."""
     arm = str(getattr(cfg.TRAIN, "VDRM_EXPERIMENT_ARM", "")).strip().lower()
     response_enabled = getattr(cfg.MODEL, 'RESPONSE_RESIDUAL', {}).get('ENABLED', False)
-    if response_enabled and arm != 'rresp':
-        raise ValueError('response head requires the named Rresp arm')
+    if response_enabled and arm not in ('rresp', 'rqual'):
+        raise ValueError('response head requires a named Rresp/Rqual arm')
     if not arm:
         if getattr(cfg.TRAIN, 'VDRM_FROZEN_BASE_CONFIG', '') or getattr(cfg.MODEL.VDRM, 'DISCRIMINATIVE_ROUTE', False):
             raise ValueError('frozen/discriminative options require a named Rfreeze/Rdisc arm')
         return
-    if arm not in {"tclean", "ronly", "rfreeze", "rdisc", "rresp"}:
+    if arm not in {"tclean", "ronly", "rfreeze", "rdisc", "rresp", "rqual"}:
         raise ValueError(
             "TRAIN.VDRM_EXPERIMENT_ARM must be empty, 'tclean', or "
-            f"'ronly', 'rfreeze', 'rdisc', or 'rresp', got {arm!r}"
+            f"'ronly', 'rfreeze', 'rdisc', 'rresp', or 'rqual', got {arm!r}"
         )
 
     required_seed = getattr(cfg.TRAIN, "VDRM_REQUIRED_SEED", None)
@@ -40,7 +40,7 @@ def validate_vdrm_experiment_contract(cfg, actual_seed=None):
             f"{arm} requires seed={int(required_seed)}, got {actual_seed!r}"
         )
 
-    if arm == 'rresp':
+    if arm in ('rresp', 'rqual'):
         from .frozen_response import validate_response_config
         validate_response_config(cfg)
         return

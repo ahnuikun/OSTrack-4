@@ -1,4 +1,4 @@
-"""Read-only Rresp checkpoint, bypass and gradient-isolation audit."""
+"""Read-only Rresp/Rqual checkpoint, bypass and gradient-isolation audit."""
 
 import argparse
 import json
@@ -42,7 +42,8 @@ def main():
     output = Path(args.save_dir) / 'analysis/frozen_response' / args.config / 'checkpoint_audit.json'
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, allow_nan=False), encoding='utf-8')
-    print('RRESP CHECKPOINT CHECK PASSED: exact Tclean bypass; frozen regression; isolated response gradients; no optimizer step')
+    arm = cfg.TRAIN.VDRM_EXPERIMENT_ARM.upper()
+    print(f'{arm} CHECKPOINT CHECK PASSED: exact Tclean bypass; frozen regression; isolated active gradients; no optimizer step')
     print('Report:', output.resolve())
 
 

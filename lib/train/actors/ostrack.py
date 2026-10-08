@@ -805,7 +805,7 @@ class OSTrackActor(BaseActor):
                     max_area_ratio=self.cfg.DATA.SEARCH.VDRM_OCCLUSION_MAX_RATIO,
                     part_grid=int(vdrm_cfg.NUM_PARTS ** 0.5),
                     return_mask=(bool(getattr(vdrm_cfg, 'DISCRIMINATIVE_ROUTE', False))
-                                 or self.cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rresp'),
+                                 or self.cfg.TRAIN.VDRM_EXPERIMENT_ARM in ('rresp', 'rqual')),
                 )
             search_img, visibility_target, visibility_applied = augmentation[:3]
             if len(augmentation) == 4:

@@ -15,6 +15,16 @@ from .rscore_probe import FOCUS_PLAN
 
 CONFIG = 'vitb_256_mae_ce_vdrm_rresp_s42_32x4_ep300'
 CONFIGS = dict(BASE_CONFIGS, Rresp=CONFIG)
+QUALITY_CONFIG = 'vitb_256_mae_ce_vdrm_rqual_s42_32x4_ep020'
+QUALITY_CONFIGS = dict(BASE_CONFIGS, Rqual=QUALITY_CONFIG)
+
+
+def model_protocol(candidate='Rresp'):
+    if candidate not in ('Rresp', 'Rqual'):
+        raise ValueError('unknown response candidate: ' + str(candidate))
+    return (CONFIGS, 300) if candidate == 'Rresp' else (QUALITY_CONFIGS, 20)
+
+
 SELECTED_FRAMES = sum(stop - start + 1 for start, stop in FOCUS_PLAN.values())
 NATIVE_STEPS = sum(stop - 1 for _, stop in FOCUS_PLAN.values()) * len(CONFIGS)
 EARLY_PLAN = dict(FOCUS_PLAN, **{
@@ -44,10 +54,12 @@ def check_bundle(path, *, include_payloads=False):
                 or any(PurePosixPath(n).is_absolute() or '..' in PurePosixPath(n).parts or '\\' in n for n in names)):
             raise ValueError('unsafe/duplicate response bundle members')
         manifest = json.load(archive.extractfile('manifest.json'))
+        candidate_arm = manifest.get('candidate_arm', 'Rresp')
+        configs, epoch = model_protocol(candidate_arm)
         profile = manifest.get('profile', 'focus')
         plan, selected_frames, native_steps = protocol(profile)
         if (manifest.get('version') != 1 or manifest.get('kind') != 'vdrm_response_probe'
-                or manifest.get('dataset') != 'got10k_vdrm_dev' or manifest.get('configurations') != CONFIGS
+                or manifest.get('dataset') != 'got10k_vdrm_dev' or manifest.get('configurations') != configs
                 or manifest.get('plan') != {n: list(b) for n, b in plan.items()}
                 or manifest.get('records') != selected_frames or manifest.get('selected_frames') != selected_frames
                 or manifest.get('native_tracking_steps') != native_steps or manifest.get('optimizer_steps') != 0):
@@ -72,7 +84,7 @@ def check_bundle(path, *, include_payloads=False):
                 if min(width, height) <= 0:
                     raise ValueError('invalid response image dimensions')
                 image_shapes[member.name] = (height, width)
-        for arm in CONFIGS:
+        for arm in configs:
             p = manifest['provenance'][arm]
             if p['state_sha256_before'] != p['state_sha256_after']:
                 raise ValueError('response probe changed model state: ' + arm)
@@ -84,7 +96,7 @@ def check_bundle(path, *, include_payloads=False):
             name = trace['sequence']
             stop = plan[name][1]
             if (len(trace['gt_xywh']) != stop or len(trace['cover']) != stop or len(trace['absence']) != stop
-                    or len(trace['source_frames']) != stop or set(trace['native']) != set(CONFIGS)):
+                    or len(trace['source_frames']) != stop or set(trace['native']) != set(configs)):
                 raise ValueError('incomplete response source history')
             for arm, rows in trace['native'].items():
                 if len(rows) != stop or [r['frame_1based'] for r in rows] != list(range(1, stop + 1)):
@@ -105,7 +117,7 @@ def check_bundle(path, *, include_payloads=False):
             raise ValueError('missing/duplicate selected response frames')
         for record in records:
             name, frame = record['sequence'], record['frame_1based']
-            if not record['bypass_exact'] or not record['frozen_regression_exact'] or set(record['arms']) != set(CONFIGS):
+            if not record['bypass_exact'] or not record['frozen_regression_exact'] or set(record['arms']) != set(configs):
                 raise ValueError('invalid response isolation proof')
             if record['image_member'] not in image_shapes:
                 raise ValueError('missing response original image')
@@ -121,7 +133,7 @@ def check_bundle(path, *, include_payloads=False):
                     if (score.shape != (1, 1, 16, 16) or maps['size_map'].shape != (1, 2, 16, 16)
                             or maps['offset_map'].shape != maps['size_map'].shape):
                         raise ValueError('wrong response map shape')
-                    if arm == 'Rresp':
+                    if arm == candidate_arm:
                         if not np.array_equal(maps['bypass_score_map'], maps['Tclean_score_map']):
                             raise ValueError('response bypass score differs')
                         for key in ('size_map', 'offset_map'):
@@ -131,7 +143,8 @@ def check_bundle(path, *, include_payloads=False):
                         same = peak == np.argmax(maps['hann_window'] * maps['Tclean_score_map'])
                         if bool(same) != record['same_hann_peak']:
                             raise ValueError('wrong response same-peak assertion')
-                        if np.abs(maps['response_delta_logits']).max() > 2.000001:
+                        delta_key = 'response_delta_energy' if arm == 'Rqual' else 'response_delta_logits'
+                        if np.abs(maps[delta_key]).max() > 2.000001:
                             raise ValueError('response correction exceeded preregistered bound')
                         if profile == 'early_failure':
                             kept = maps['final_retained_mask']
@@ -140,12 +153,14 @@ def check_bundle(path, *, include_payloads=False):
                                     or padding.shape != (256, 256) or padding.dtype != np.bool_
                                     or maps['Tclean_score_logits'].shape != score.shape):
                                 raise ValueError('wrong early response CE/padding/logit shape')
-                            if np.any(maps['response_delta_logits'][~kept] != 0):
+                            if arm == 'Rresp' and np.any(maps[delta_key][~kept] != 0):
                                 raise ValueError('CE-removed response cell was modified')
-                            if not np.allclose(maps['score_logits'], maps['Tclean_score_logits'] +
-                                               maps['response_delta_logits'], rtol=0, atol=2e-6):
+                            if arm == 'Rresp' and not np.allclose(maps['score_logits'], maps['Tclean_score_logits'] +
+                                               maps[delta_key], rtol=0, atol=2e-6):
                                 raise ValueError('response logits do not equal base plus correction')
-            candidate = indexed[name, frame, 'Rresp']
+                        if arm == 'Rqual':
+                            verify_quality_maps(maps)
+            candidate = indexed[name, frame, candidate_arm]
             if record['same_hann_peak'] and record['base_samecrop_bbox'] != candidate['bbox_xywh']:
                 raise ValueError('same-peak response changed regression bbox')
             if record['bypass_bbox'] != record['base_samecrop_bbox']:
@@ -157,3 +172,28 @@ def check_bundle(path, *, include_payloads=False):
                     if array_hash(inputs[key]) != candidate['input_sha256'][key]:
                         raise ValueError('response actual input hash differs: ' + key)
     return (manifest, contents, image_shapes) if include_payloads else manifest
+
+
+def verify_quality_maps(maps):
+    """Independently verify the exported candidate geometry and energy formula."""
+    logits, valid = maps['candidate_quality_logits'], maps['candidate_valid_mask']
+    if (logits.shape != (1, 256) or valid.shape != logits.shape or valid.dtype != np.bool_
+            or maps['candidate_boxes'].shape != (1, 256, 4)
+            or maps['candidate_roi_support'].shape != logits.shape):
+        raise ValueError('wrong candidate-quality map shape/type')
+    y, x = np.mgrid[:16, :16]
+    centers = (np.stack((x, y)).astype(np.float32)[None] + maps['offset_map']) / 16
+    boxes = np.concatenate((centers, maps['size_map']), axis=1).reshape(1, 4, 256).transpose(0, 2, 1)
+    if not np.array_equal(boxes, maps['candidate_boxes']):
+        raise ValueError('candidate-quality boxes differ from CENTER geometry')
+    mean = (logits * valid).sum(1, keepdims=True) / np.maximum(valid.sum(1, keepdims=True), 1)
+    delta = (2 * np.tanh((logits - mean) / 2) * valid).reshape(1, 1, 16, 16)
+    if not np.allclose(delta, maps['response_delta_energy'], rtol=0, atol=2e-6):
+        raise ValueError('candidate correction differs from centered bounded quality')
+    if np.any(maps['response_delta_energy'].reshape(1, 256)[~valid] != 0):
+        raise ValueError('invalid candidate received a correction')
+    delta = maps['response_delta_energy']
+    score = maps['response_base_score_map'] * np.exp(delta - delta.max())
+    if (not np.array_equal(maps['response_base_score_map'], maps['Tclean_score_map'])
+            or not np.allclose(score, maps['score_map'], rtol=2e-6, atol=1e-8)):
+        raise ValueError('candidate score differs from native energy correction')

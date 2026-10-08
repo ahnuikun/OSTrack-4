@@ -56,7 +56,7 @@ class OSTrack(BaseTracker):
             validate_frozen_config(params.cfg)
             validate_frozen_checkpoint(network, checkpoint, cfg=params.cfg,
                                        expected_epoch=params.cfg.TEST.EPOCH)
-        elif params.cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rresp':
+        elif params.cfg.TRAIN.VDRM_EXPERIMENT_ARM in ('rresp', 'rqual'):
             from lib.train.frozen_response import validate_response_config, validate_response_checkpoint
             validate_response_config(params.cfg)
             validate_response_checkpoint(network, checkpoint, cfg=params.cfg,

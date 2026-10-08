@@ -1,4 +1,4 @@
-"""CPU-only Rresp candidate/early-failure audit; no datasets or weights needed."""
+"""CPU-only Rresp/Rqual candidate audit; no datasets or weights needed."""
 
 import argparse
 from pathlib import Path
@@ -34,17 +34,19 @@ def run(bundle, output):
         source_bundle=str(bundle.resolve()), source_bundle_sha256=source_hash,
         profile=summary['profile'], records=summary['records'], optimizer_steps=0,
         full_dev_gate_passed=False, automatic_identity_verdict=False)
+    if 'candidate_arm' in summary:
+        manifest['candidate_arm'] = summary['candidate_arm']
     write_bundle(output, manifest, {'summary.json': dump_json(summary), 'per_frame.json': dump_json(frames),
                                     'report.md': report.encode('utf-8')})
     print(report)
-    print(f"RRESP ANALYSIS COMPLETE: {summary['records']} records; no performance/identity verdict")
+    print(f"{summary.get('candidate_arm', 'Rresp').upper()} ANALYSIS COMPLETE: {summary['records']} records; no performance/identity verdict")
     print('Analysis bundle:', output.resolve())
     return summary
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--bundle', required=True, help='Verified Rresp focus or early_failure .tar.gz')
+    parser.add_argument('--bundle', required=True, help='Verified Rresp/Rqual focus or early_failure .tar.gz')
     parser.add_argument('--output', help='New analysis .tar.gz path; existing files are never overwritten')
     args = parser.parse_args()
     output = args.output or str(Path(args.bundle).with_name(Path(args.bundle).name.removesuffix('.tar.gz') + '_analysis.tar.gz'))

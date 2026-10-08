@@ -14,11 +14,13 @@ PREFIX = 'response_residual.'
 
 
 def is_response_run(cfg):
-    return cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rresp'
+    return cfg.TRAIN.VDRM_EXPERIMENT_ARM in ('rresp', 'rqual')
 
 
 def validate_response_config(cfg):
     base = load_base_config()
+    quality = cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rqual'
+    epochs = 20 if quality else 300
     if not is_response_run(cfg) or not getattr(cfg.MODEL, 'RESPONSE_RESIDUAL', {}).get('ENABLED'):
         raise ValueError('Rresp requires its named arm and enabled response head')
     if cfg.MODEL.VDRM != base.MODEL.VDRM or cfg.MODEL.BACKBONE != base.MODEL.BACKBONE or cfg.MODEL.HEAD != base.MODEL.HEAD:
@@ -27,8 +29,8 @@ def validate_response_config(cfg):
         raise ValueError('Rresp requires the registered Tclean epoch-300 source')
     if cfg.MODEL.PRETRAIN_FILE or cfg.TRAIN.AMP or not cfg.TRAIN.VDRM_FROZEN_SKIP_VAL:
         raise ValueError('Rresp requires strict source loading, FP32 and no validation-set access')
-    if cfg.TRAIN.BATCH_SIZE != 32 or cfg.TRAIN.EPOCH != 300 or cfg.TEST.EPOCH != 300 or cfg.TRAIN.VDRM_REQUIRED_SEED != 42:
-        raise ValueError('Rresp screening requires 32 per GPU, epoch 300 and configuration seed 42')
+    if cfg.TRAIN.BATCH_SIZE != 32 or cfg.TRAIN.EPOCH != epochs or cfg.TEST.EPOCH != epochs or cfg.TRAIN.VDRM_REQUIRED_SEED != 42:
+        raise ValueError(f'response screening requires 32 per GPU, epoch {epochs} and configuration seed 42')
     if cfg.TRAIN.CE_START_EPOCH != 0 or cfg.TRAIN.CE_WARM_EPOCH != 0 or cfg.DATA.TRAIN != base.DATA.TRAIN:
         raise ValueError('Rresp requires fixed CE and the registered training subset')
     for field in ('GIOU_WEIGHT', 'L1_WEIGHT', 'VDRM_VISIBILITY_WEIGHT', 'VDRM_RANK_WEIGHT',
@@ -38,18 +40,28 @@ def validate_response_config(cfg):
     for section in ('TEMPLATE', 'SEARCH'):
         if cfg.DATA[section].SIZE != base.DATA[section].SIZE or cfg.DATA[section].FACTOR != base.DATA[section].FACTOR:
             raise ValueError('Rresp image geometry must match Tclean')
-    if cfg.DATA.MEAN != base.DATA.MEAN or cfg.DATA.STD != base.DATA.STD or cfg.TEST != base.TEST:
+    expected_test = dict(base.TEST, EPOCH=epochs)
+    if cfg.DATA.MEAN != base.DATA.MEAN or cfg.DATA.STD != base.DATA.STD or cfg.TEST != expected_test:
         raise ValueError('Rresp test geometry/overrides and normalization must match Tclean')
     model_cfg, loss_cfg = cfg.MODEL.RESPONSE_RESIDUAL, cfg.TRAIN.RESPONSE_RESIDUAL
+    if quality:
+        if model_cfg.TYPE != 'candidate_quality' or model_cfg.ROI_GRID_SIZE != 3 or cfg.TRAIN.LR_DROP_EPOCH != 16:
+            raise ValueError('Rqual requires the registered 3x3 candidate head and 20-epoch schedule')
+        expected_loss = dict(QUALITY_WEIGHT=1., RANK_WEIGHT=.5, PRESERVE_WEIGHT=.5, ABSTAIN_WEIGHT=.1,
+            POSITIVE_IOU=.5, NEGATIVE_IOU=.1, PROTECT_IOU_GAP=.05, RANK_MARGIN=.2, HARD_NEGATIVE_TOPK=4)
+        if dict(loss_cfg) != expected_loss or model_cfg.MAX_DELTA_LOGIT != 2.:
+            raise ValueError('Rqual screening loss/bound differs from the preregistered recipe')
+    elif getattr(model_cfg, 'TYPE', 'logit') != 'logit':
+        raise ValueError('Rresp must retain its original logit head')
     for field in ('PROJECTION_DIM', 'HIDDEN_DIM'):
         if type(model_cfg[field]) is not int or model_cfg[field] <= 0:
             raise ValueError('response dimensions must be positive integers')
-    for value in (model_cfg.MAX_DELTA_LOGIT, loss_cfg.FOCAL_WEIGHT, loss_cfg.RANK_WEIGHT):
+    for value in (model_cfg.MAX_DELTA_LOGIT, loss_cfg.QUALITY_WEIGHT if quality else loss_cfg.FOCAL_WEIGHT, loss_cfg.RANK_WEIGHT):
         if not math.isfinite(value) or value <= 0:
             raise ValueError('response bound and both loss weights must be finite and positive')
     if type(loss_cfg.HARD_NEGATIVE_TOPK) is not int or loss_cfg.HARD_NEGATIVE_TOPK < 1:
         raise ValueError('response hard-negative top-k must be a positive integer')
-    if any(not math.isfinite(v) or v < 0 for v in (loss_cfg.RANK_MARGIN, loss_cfg.NEGATIVE_GUARD_CELLS)):
+    if any(not math.isfinite(v) or v < 0 for v in (loss_cfg.RANK_MARGIN, 0 if quality else loss_cfg.NEGATIVE_GUARD_CELLS)):
         raise ValueError('invalid response ranking margin/guard')
 
 
@@ -73,8 +85,12 @@ def validate_response_checkpoint(model, checkpoint, cfg=None, expected=None, exp
         raise ValueError('invalid Rresp checkpoint identity/epoch')
     if expected_epoch is not None and epoch != expected_epoch:
         raise ValueError('Rresp checkpoint is not the requested epoch')
-    if not isinstance(contract, dict) or contract.get('version') != 1 or contract.get('arm') != 'rresp':
+    if not isinstance(contract, dict) or contract.get('version') != 1 or contract.get('arm') not in ('rresp', 'rqual'):
         raise ValueError('missing Rresp provenance contract')
+    if contract['arm'] == 'rqual' and (contract.get('train_epochs') != 20 or epoch > 20):
+        raise ValueError('Rqual checkpoint exceeds the registered 20-epoch screen')
+    if cfg is not None and contract['arm'] != cfg.TRAIN.VDRM_EXPERIMENT_ARM:
+        raise ValueError('response checkpoint arm mismatch')
     if contract.get('base_config') != BASE_CONFIG or contract.get('base_epoch') != 300:
         raise ValueError('wrong Rresp Tclean source')
     if expected is not None and contract != expected:
@@ -123,9 +139,11 @@ def prepare_response_models(cfg, save_dir, config_name, checkpoint_path=None):
             raise ValueError('Rresp/Tclean tensor mismatch: ' + key)
         candidate[key] = value
     model.load_state_dict(candidate, strict=True)
-    contract = dict(version=1, arm='rresp', config_name=config_name,
+    contract = dict(version=1, arm=cfg.TRAIN.VDRM_EXPERIMENT_ARM, config_name=config_name,
         config_sha256=configuration_hash(cfg), base_config=BASE_CONFIG, base_epoch=300,
         source_sha256=file_hash(source), baseline_sha256=baseline_hash(state))
+    if cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rqual':
+        contract['train_epochs'] = cfg.TRAIN.EPOCH
     model.frozen_response_contract = contract
     if checkpoint_path is None:
         directory = Path(save_dir) / 'checkpoints/train/ostrack' / config_name
@@ -143,7 +161,11 @@ def prepare_response_models(cfg, save_dir, config_name, checkpoint_path=None):
 
 def make_response_actor(model, cfg):
     from lib.train.actors.response_residual import ResponseResidualActor
-    return ResponseResidualActor(model, {}, {},
+    actor = ResponseResidualActor
+    if cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rqual':
+        from lib.train.actors.candidate_quality import CandidateQualityActor
+        actor = CandidateQualityActor
+    return actor(model, {}, {},
         SimpleNamespace(batchsize=cfg.TRAIN.BATCH_SIZE, num_template=1), cfg)
 
 
@@ -183,7 +205,8 @@ def audit_response_model(model, baseline, cfg, data):
             for key in ('size_map', 'offset_map', 'backbone_feat'):
                 if not torch.equal(output[key], reference[key]):
                     raise RuntimeError('Rresp altered frozen visual/regression output: ' + key)
-            if not output['response_delta_logits'].any():
+            delta_key = 'response_delta_energy' if cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rqual' else 'response_delta_logits'
+            if not output[delta_key].any():
                 for key in ('pred_boxes', 'score_map'):
                     if not torch.equal(output[key], reference[key]):
                         raise RuntimeError('zero-initialized Rresp is not exactly Tclean: ' + key)
@@ -210,13 +233,20 @@ def audit_response_model(model, baseline, cfg, data):
                         if not torch.isfinite(grad).all():
                             raise RuntimeError('non-finite response gradient')
                         norm += grad.square().sum().item()
-                if norm <= 0:
+                # Preservation/abstention can legitimately be inactive, and
+                # the zero-initialized abstention regularizer is already zero.
+                optional = key == 'candidate_abstain' or (
+                    key == 'candidate_preserve' and status.get('Response/preservation_samples', 0) == 0) or (
+                    key == 'candidate_rank' and status.get('Response/ranking_samples', 0) == 0)
+                if norm <= 0 and not optional:
                     raise RuntimeError('response loss does not train its head: ' + key)
                 result[key + '_head_gradient_l2'] = math.sqrt(norm)
             result.update(bypass_exact_tclean=True, frozen_regression_exact=True,
                 baseline_gradient_tensors=0, alpha_gradient_tensors=0,
                 eligible_samples=status['Response/eligible_samples'],
                 trainable_parameters=sum(p.numel() for n, p in parameters if n.startswith(PREFIX)))
+            if cfg.TRAIN.VDRM_EXPERIMENT_ARM == 'rqual':
+                result['candidate_training_support'] = {k:v for k,v in status.items() if k.startswith('Response/')}
     finally:
         for name, parameter in model.named_parameters():
             parameter.requires_grad_(flags[name])
