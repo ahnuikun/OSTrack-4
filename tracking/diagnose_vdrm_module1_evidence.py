@@ -15,7 +15,7 @@ from lib.test.analysis.module1_evidence import ARMS, PLAN, RECORDS, STEPS, check
 from lib.test.analysis.frozen_failure_diagnostics import CONFIGS, dump_json, write_bundle
 from lib.test.evaluation import get_dataset
 from tracking.diagnose_vdrm_frozen_failures import (
-    SpatialCapture, checkpoint_paths, crop_geometry, intervention, load_models, png_bytes, state_hash)
+    SpatialCapture, checkpoint_paths, config_for, crop_geometry, intervention, load_models, png_bytes, state_hash)
 from tracking.diagnose_vdrm_native_float import (
     NativeTracker, assert_exact, clone_output, native_step, npz_bytes, prepare_cases, read_rgb)
 
@@ -117,7 +117,8 @@ def run(save_dir, output):
         raise RuntimeError('native tracker requires CUDA')
     paths = checkpoint_paths(save_dir)
     cases = prepare_cases(get_dataset('got10k_vdrm_dev'), plan=PLAN)
-    models, configs, provenance = load_models(paths, 'cuda')
+    models, _, provenance = load_models(paths, 'cuda')
+    configs = {arm: config_for(CONFIGS[arm]) for arm in ARMS}
     print(f'PRECHECK PASSED: {len(cases)} cases, {STEPS} native steps, {RECORDS} saved frames', flush=True)
     payloads = collect(cases, models, configs)
     for arm in ARMS:

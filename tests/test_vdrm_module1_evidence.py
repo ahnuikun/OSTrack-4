@@ -192,3 +192,30 @@ def test_existing_output_rejected_before_cuda_or_data(tmp_path):
         with pytest.raises(FileExistsError):
             entry.run(tmp_path, output)
     assert output.read_bytes() == b'existing'
+
+
+def test_run_uses_real_loader_return_contract(tmp_path):
+    # load_models returns models, ONE shared cfg, provenance; not a cfg map.
+    models = {arm: object() for arm in ARMS}
+    shared_cfg = entry.config_for(CONFIGS['Tclean'])
+    provenance = {arm: dict(state_sha256_before='unchanged') for arm in ARMS}
+    with patch.object(torch.cuda, 'is_available', return_value=True), \
+            patch.object(entry, 'checkpoint_paths', return_value={}) as paths, \
+            patch.object(entry, 'get_dataset', return_value='dataset'), \
+            patch.object(entry, 'prepare_cases', return_value=['case']) as prepare, \
+            patch.object(entry, 'load_models', return_value=(models, shared_cfg, provenance)) as loader, \
+            patch.object(entry, 'collect', return_value={}) as collect, \
+            patch.object(entry, 'state_hash', return_value='unchanged'), \
+            patch.object(entry, 'write_bundle') as write, \
+            patch.object(entry, 'check_bundle') as check:
+        output = tmp_path / 'probe.tar.gz'
+        entry.run(tmp_path, output)
+    loader.assert_called_once_with({}, 'cuda')
+    prepare.assert_called_once_with('dataset', plan=PLAN)
+    configs = collect.call_args.args[2]
+    assert set(configs) == set(ARMS)
+    assert configs['Tclean'].TRAIN.VDRM_EXPERIMENT_ARM == 'tclean'
+    assert configs['Rfreeze'].TRAIN.VDRM_EXPERIMENT_ARM == 'rfreeze'
+    assert configs['Rdisc'].MODEL.VDRM.DISCRIMINATIVE_ROUTE is True
+    assert write.call_args.args[1]['records'] == 499
+    check.assert_called_once_with(output)

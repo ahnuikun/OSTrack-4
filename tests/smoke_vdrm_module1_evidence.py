@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import patch
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
@@ -18,6 +19,8 @@ from lib.test.analysis.module1_evidence import ARMS, frame_metrics
 from lib.test.analysis.frozen_failure_diagnostics import CONFIGS
 from tracking.diagnose_vdrm_frozen_failures import config_for, state_hash
 from tracking.diagnose_vdrm_module1_evidence import collect
+from tracking import diagnose_vdrm_module1_evidence as entry
+from lib.test.analysis import module1_evidence as evidence
 from tracking.diagnose_vdrm_native_float import NativeTracker, read_rgb
 
 
@@ -73,10 +76,24 @@ def main():
                 production = [gt[0].tolist()] + [tracker.track(read_rgb(path))['target_bbox'] for path in frames[1:]]
             assert boxes == production
         assert before == {arm: state_hash(model) for arm, model in models.items()}
+        # Exercise run(), not just collect(): preserve the real loader's
+        # models / single shared cfg / provenance return contract.
+        provenance = {arm: dict(state_sha256_before=before[arm]) for arm in ARMS}
+        short_plan = {sequence.name: (2, 3)}
+        with patch.object(entry, 'checkpoint_paths', return_value={}), \
+                patch.object(entry, 'get_dataset', return_value=None), \
+                patch.object(entry, 'prepare_cases', return_value=cases), \
+                patch.object(entry, 'load_models', return_value=(models, configs['Tclean'], provenance)), \
+                patch.object(entry, 'PLAN', short_plan), patch.object(evidence, 'PLAN', short_plan), \
+                patch.object(entry, 'RECORDS', 2), patch.object(evidence, 'RECORDS', 2), \
+                patch.object(entry, 'STEPS', 6), patch.object(evidence, 'STEPS', 6):
+            entry.run(root, root / 'entry_probe.tar.gz')
+            checked, _, _ = evidence.check_bundle(root / 'entry_probe.tar.gz')
+            assert checked['records'] == 2 and checked['native_steps'] == 6
     report = dict(synthetic_fixture=True, real_server_data_verified=False, optimizer_steps=0,
-        device=torch.cuda.get_device_name(), native_steps=12, saved_arm_records=12,
+        device=torch.cuda.get_device_name(), native_steps=18, saved_arm_records=18,
         labels_do_not_change_boxes=True, capture_matches_uninstrumented_native=True,
-        state_unchanged=True, max_decode_error_pixels=max(decode_errors))
+        state_unchanged=True, run_entry_and_bundle_checked=True, max_decode_error_pixels=max(decode_errors))
     path = PROJECT / 'output/analysis/module1_step01_cuda_smoke.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2), encoding='utf-8')

@@ -124,3 +124,7 @@ python tracking/diagnose_vdrm_module1_evidence.py \
 发布前对应CPU协议/完整性/候选解码及既有native_float回归共32项测试通过。CPU完整打包fixture覆盖499时点、1497份模型记录。RTX5070上的原生ViT-B/CE/CENTER CUDA短前缀验证通过：两组标签共12个原生步骤、12份内部记录，非零Rdisc路由修正，采集轨迹与无钩子原生轨迹精确一致，初始化后的GT/可见性标签变化不改变预测，模型状态哈希不变，独立解码最大误差0。该GPU验证是合成短前缀，不是完整五案例真实服务器验证。
 
 设计依据：VDRM_MODULE1_DESIGN_REASSESSMENT_20261009.md。使用workflow-engineer技能制定里程碑和验证顺序，使用pr-writer技能整理提交说明。
+
+## 入口修复记录
+
+首次服务器运行在collect之前报KeyError: Tclean。原因是入口误将load_models返回的单份公共cfg当作按模型名索引的配置字典。已改为按三个注册配置分别读取configs，不改变权重和实验协议。原CUDA测试直接调用collect，漏掉run入口接线；新增测试保留真实loader返回接口，并增加CUDA短前缀run→collect→打包→独立CPU检查路径。短前缀测试替换了外部数据/权重加载入口，不冒充真实服务器完整五案例验证。
