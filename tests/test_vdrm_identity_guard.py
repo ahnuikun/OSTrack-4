@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from lib.test.analysis.identity_guard import (PROTOCOL, partition, guard_select,
     audit_policy, decide, policy_key, diagnose_sequence, diagnose_summary)
 from lib.test.analysis.identity_guard_bundle import check_bundle
 from lib.test.analysis.identity_native import load_screen_heads
+from lib.test.analysis.candidate_cues import read_npz
 from tracking import screen_vdrm_identity_guard as entry, analyze_vdrm_identity_guard as analyzer
 from test_vdrm_identity_native import synthetic_outputs, native_fixture
 from test_vdrm_native_float import rewrite_bundle
@@ -36,7 +38,7 @@ def guard_fixture(root, factory=tiny_model):
     names = [f'GOT-10k_Train_{i+1:06d}' for i in range(max(parts['fit']+parts['audit']+[9332])+1)]
     (data/'list.txt').write_text('\n'.join(names), encoding='utf-8')
     image = np.random.default_rng(42).integers(0, 256, (160, 160, 3), dtype=np.uint8)
-    outputs = synthetic_outputs()
+    outputs = synthetic_outputs(absent_sentinel=True)
     for identity in parts['fit']+parts['audit']:
         folder = data/names[identity]; folder.mkdir()
         np.savetxt(folder/'groundtruth.txt', outputs['gt'], delimiter=',')
@@ -161,6 +163,11 @@ class GuardRuntimeTests(unittest.TestCase):
         self.assertIn(len(manifest['sequences']), (128,192))
         self.assertEqual(self.before, [file_hash(p) for p in (self.screen,self.source)])
         self.assertEqual(manifest['states_before'], manifest['states_after'])
+        with tarfile.open(self.root/'native/identity_guard_results.tar.gz', 'r:gz') as archive:
+            for spec in manifest['sequences']:
+                arrays = read_npz(archive.extractfile(spec['member']).read())
+                np.testing.assert_array_equal(arrays['gt'][3], [-1]*4)
+                self.assertEqual(len(arrays['native_boxes']), 4)
 
     def test_active_policy_frozen_before_any_audit_inference_and_all192_checked(self):
         seen=[]
@@ -169,7 +176,7 @@ class GuardRuntimeTests(unittest.TestCase):
             if plan['split']=='audit':
                 frozen=json.loads((self.root/'active/frozen_choice.json').read_text())
                 self.assertEqual(frozen['arm'],'mean_rank'); self.assertEqual(frozen['threshold'],.4)
-            return synthetic_outputs(),[2]
+            return synthetic_outputs(absent_sentinel=True),[2]
         result=self.run_entry('active',collector)
         manifest,_=check_bundle(self.root/'active/identity_guard_results.tar.gz')
         self.assertTrue(result['heldout_screen_passed'])
@@ -184,13 +191,27 @@ class GuardRuntimeTests(unittest.TestCase):
         seen=[]
         def collector(plan,*args):
             self.assertEqual(plan['split'],'fit');seen.append(plan['name'])
-            x=synthetic_outputs()
+            x=synthetic_outputs(absent_sentinel=True)
             for arm in ARMS:x[arm+'_scores'][:]=0
             return x,[2]
         result=self.run_entry('disabled',collector)
         manifest,_=check_bundle(self.root/'disabled/identity_guard_results.tar.gz')
         self.assertEqual(len(seen),128);self.assertEqual(len(manifest['sequences']),128)
         self.assertIsNone(result['heldout']);self.assertFalse(result['heldout_screen_passed'])
+
+    def test_inconsistent_sentinel_fails_before_gpu_and_output_creation(self):
+        name = f'GOT-10k_Train_{self.parts["fit"][0]+1:06d}'
+        path = self.data/name/'absence.label'
+        original = path.read_bytes()
+        try:
+            labels = np.loadtxt(path); labels[3] = 0
+            np.savetxt(path, labels)
+            with patch.object(entry, 'load_models', side_effect=AssertionError('GPU access')):
+                with self.assertRaisesRegex(ValueError, name+r'.*frames \(1-based\)=\[4\]'):
+                    entry.run(self.screen, self.data, self.root, self.root/'bad_annotations', 'cpu')
+            self.assertFalse((self.root/'bad_annotations').exists())
+        finally:
+            path.write_bytes(original)
 
 
 if __name__=='__main__':unittest.main()

@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT))
 from lib.test.analysis.identity_native import (PROTOCOL, load_screen_heads, extract_cells,
     sequence_evidence, summarize, render_report, check_bundle)
 from lib.test.analysis.frozen_failure_diagnostics import dump_json
-from lib.test.analysis.frozen_vdrm_stages import visibility_protocol
+from lib.test.analysis.got10k_annotations import validate_native_annotations
 from lib.test.evaluation.got10kdataset import _vdrm_dev_sequence_ids
 from lib.train.frozen_vdrm import BASE_CONFIG, file_hash
 from lib.train.identity_offline import ARMS
@@ -37,10 +37,7 @@ def plan_sequences(root):
         gt = np.loadtxt(folder/'groundtruth.txt', delimiter=',', ndmin=2)
         cover = np.loadtxt(folder/'cover.label', ndmin=1)
         absence = np.loadtxt(folder/'absence.label', ndmin=1)
-        visibility_protocol(cover, absence)
-        if (gt.shape != (len(cover), 4) or len(gt) < 2 or not np.isfinite(gt).all() or
-                (gt[:, 2:] < 0).any() or (gt[0, 2:] <= 0).any()):
-            raise ValueError('invalid development GT/visibility: '+str(folder))
+        validate_native_annotations(gt, cover, absence, folder)
         frames = [folder/f'{i+1:08d}.jpg' for i in range(len(gt))]
         actual = sorted(p.name for p in folder.glob('*.jpg'))
         if actual != [p.name for p in frames]:

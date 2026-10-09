@@ -32,7 +32,7 @@ from test_vdrm_native_float import rewrite_bundle
 from test_vdrm_frozen import tiny_model
 
 
-def synthetic_outputs():
+def synthetic_outputs(absent_sentinel=False):
     n = 4
     box = np.array([10., 20., 30., 40.])
     boxes = np.tile(box, (n, 256, 1))
@@ -47,6 +47,9 @@ def synthetic_outputs():
     for arm in ARMS:
         score = np.zeros_like(base); score[:, 0] = .9
         arrays[arm+'_scores'] = score
+    if absent_sentinel:
+        arrays['gt'][3] = -1
+        arrays['absence'][3] = 1
     return arrays
 
 
@@ -81,7 +84,9 @@ def native_fixture(root, factory=tiny_model):
     images = [rng.integers(0, 256, (160, 160, 3), dtype=np.uint8) for _ in range(3)]
     for identity in ids:
         folder = data/names[identity]; folder.mkdir()
-        np.savetxt(folder/'groundtruth.txt', np.tile([60.25, 60.375, 24.5, 24.75], (3, 1)), delimiter=',')
+        gt = np.tile([60.25, 60.375, 24.5, 24.75], (3, 1))
+        gt[-1] = -1  # Real absent-target sentinel, retained through packaging.
+        np.savetxt(folder/'groundtruth.txt', gt, delimiter=',')
         np.savetxt(folder/'cover.label', [8, 2, 0]); np.savetxt(folder/'absence.label', [0, 0, 1])
         for i, image in enumerate(images, 1): cv2.imwrite(str(folder/f'{i:08d}.jpg'), image)
     return root/'screen/identity_offline_results.tar.gz', data, source
@@ -209,7 +214,7 @@ class NativeRuntimeTests(unittest.TestCase):
     def test_new_labels_cannot_change_native_or_head_outputs(self):
         plan = entry.plan_sequences(self.data)[0]
         alternate = dict(plan, gt=plan['gt'].copy(), cover=np.full(3, 8), absence=np.zeros(3))
-        alternate['gt'][1:, :2] += 80
+        alternate['gt'][1:] = plan['gt'][0] + [80, 80, 0, 0]
         with patch('tracking.diagnose_vdrm_frozen_failures.build_ostrack', side_effect=tiny_model), \
              patch.object(torch.Tensor, 'cuda', lambda v, *a, **kw: v):
             models, cfg, _ = entry.load_models({'Tclean': self.source}, torch.device('cpu'), arms=('Tclean',))

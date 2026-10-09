@@ -13,7 +13,7 @@ from lib.train.identity_offline import ARMS, IdentityMatcher, roi_cells
 from lib.test.evaluation.got10kdataset import _vdrm_dev_sequence_ids
 from lib.test.analysis.identity_offline import check_bundle as check_screen
 from lib.test.analysis.candidate_cues import read_npz
-from lib.test.analysis.frozen_vdrm_stages import visibility_protocol
+from lib.test.analysis.got10k_annotations import validate_native_annotations
 
 PROTOCOL = dict(version=1, dataset='got10k_vdrm_dev', pools=['top5', 'all256'],
                 minimum_cells=3, success_iou=0.5, minimum_hard_frames=30,
@@ -81,11 +81,15 @@ def choose_candidates(base, scores, eligible):
 
 
 def overlaps(boxes, gt):
-    end = np.minimum(boxes[..., :2]+boxes[..., 2:], gt[:, None, :2]+gt[:, None, 2:])
-    start = np.maximum(boxes[..., :2], gt[:, None, :2])
+    # Invalid GT has no IoU. Do not turn two negative dimensions into an area,
+    # and do not overwrite the raw annotations saved for independent replay.
+    valid = (gt[:, 2:] > 0).all(1)
+    geometry = np.where(valid[:, None], gt, 0)
+    end = np.minimum(boxes[..., :2]+boxes[..., 2:], geometry[:, None, :2]+geometry[:, None, 2:])
+    start = np.maximum(boxes[..., :2], geometry[:, None, :2])
     area = np.maximum(end-start, 0).prod(-1)
-    union = boxes[..., 2:].prod(-1)+gt[:, None, 2:].prod(-1)-area
-    return np.divide(area, union, out=np.zeros_like(area), where=union > 0)
+    union = boxes[..., 2:].prod(-1)+geometry[:, None, 2:].prod(-1)-area
+    return np.divide(area, union, out=np.zeros_like(area), where=(union > 0) & valid[:, None])
 
 
 def sequence_evidence(name, arrays):
@@ -101,7 +105,8 @@ def sequence_evidence(name, arrays):
         if arrays[key].shape != shape or not np.isfinite(arrays[key]).all():
             raise ValueError('invalid native array: '+key)
     gt = arrays['gt']
-    if (gt[:, 2:] < 0).any() or (gt[0, 2:] <= 0).any() or (arrays['boxes'][..., 2:] <= 0).any():
+    masks, _ = validate_native_annotations(gt, arrays['cover'], arrays['absence'], name)
+    if (arrays['boxes'][..., 2:] <= 0).any():
         raise ValueError('invalid box geometry')
     common = arrays['common_cells']
     if not np.isin(common, np.arange(10)).all() or (arrays['base_scores'] < 0).any():
@@ -115,7 +120,6 @@ def sequence_evidence(name, arrays):
     native = base.argmax(1)
     if not np.array_equal(arrays['boxes'][np.arange(n), native], arrays['native_boxes']):
         raise ValueError('all-candidate decode differs from actual native output')
-    masks, _ = visibility_protocol(arrays['cover'], arrays['absence'])
     visible = ((gt[1:, 2:] > 0).all(1) & (arrays['cover'][1:] > 0) & (arrays['absence'][1:] == 0))
     stages = dict(visible=visible, normal=visible & (arrays['cover'][1:] >= 7),
                   severe_partial=visible & masks['severe_partial'][1:],

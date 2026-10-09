@@ -4,13 +4,16 @@ import io
 import json
 from pathlib import Path
 import sys
+import tarfile
 import tempfile
+import numpy as np
 import torch
 
 PROJECT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(PROJECT));sys.path.insert(0,str(PROJECT/'tests'))
 from lib.models.ostrack import build_ostrack
 from lib.test.analysis.identity_guard_bundle import check_bundle
+from lib.test.analysis.candidate_cues import read_npz
 from test_vdrm_identity_guard import guard_fixture
 from tracking.screen_vdrm_identity_guard import run
 
@@ -24,8 +27,16 @@ def main():
         result=run(screen,data,root,root/'guard','cuda')
         manifest,repeated=check_bundle(root/'guard/identity_guard_results.tar.gz')
         if result!=repeated:raise RuntimeError('CUDA result differs from CPU verification')
+        sentinels=0
+        with tarfile.open(root/'guard/identity_guard_results.tar.gz','r:gz') as archive:
+            for spec in manifest['sequences']:
+                arrays=read_npz(archive.extractfile(spec['member']).read())
+                if not np.array_equal(arrays['gt'][3],[-1]*4) or len(arrays['native_boxes'])!=4:
+                    raise RuntimeError('absent GT or native frame coverage changed')
+                sentinels+=1
         report=dict(synthetic_fixture=True,real_server_weights_tested=False,device=torch.cuda.get_device_name(),
             sequences=len(manifest['sequences']),native_steps=manifest['native_tracking_steps'],
+            raw_absent_sentinels_preserved=sentinels,
             probe_optimizer_steps=0,states_unchanged=manifest['states_before']==manifest['states_after'],
             cpu_decision_recomputed=True)
         path=PROJECT/'output/analysis/identity_guard_cuda_smoke.json'

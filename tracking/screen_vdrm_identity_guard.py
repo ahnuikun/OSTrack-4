@@ -14,7 +14,7 @@ from lib.test.analysis.identity_native import load_screen_heads
 from lib.test.analysis.identity_guard import PROTOCOL, partition, grid_record, fit_policy, decide
 from lib.test.analysis.identity_guard_bundle import check_bundle, render_report
 from lib.test.analysis.frozen_failure_diagnostics import dump_json
-from lib.test.analysis.frozen_vdrm_stages import visibility_protocol
+from lib.test.analysis.got10k_annotations import validate_native_annotations
 from tracking.diagnose_vdrm_frozen_failures import load_models, state_hash
 from tracking.probe_vdrm_identity_native import collect_sequence
 
@@ -33,10 +33,7 @@ def plan_sequences(root, parts):
             gt = np.loadtxt(folder/'groundtruth.txt', delimiter=',', ndmin=2)
             cover = np.loadtxt(folder/'cover.label', ndmin=1)
             absence = np.loadtxt(folder/'absence.label', ndmin=1)
-            visibility_protocol(cover, absence)
-            if (gt.shape != (len(cover), 4) or len(gt) < 2 or not np.isfinite(gt).all() or
-                    (gt[:, 2:] < 0).any() or (gt[0, 2:] <= 0).any()):
-                raise ValueError('invalid guard annotations: '+str(folder))
+            validate_native_annotations(gt, cover, absence, folder)
             frames = [folder/f'{i+1:08d}.jpg' for i in range(len(gt))]
             if sorted(p.name for p in folder.glob('*.jpg')) != [p.name for p in frames]:
                 raise ValueError('missing/extra guard frames: '+str(folder))
