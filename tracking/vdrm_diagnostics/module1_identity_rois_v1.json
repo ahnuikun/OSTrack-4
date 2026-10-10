@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "kind": "vdrm_module1_identity_rois",
+  "source_sha256": "6eb7ded43812bd89ab5e39af9c95abcfbb908f221052ef619f66c789d8239fcb",
+  "posthoc": true,
+  "entries": [
+    {
+      "sequence": "GOT-10k_Train_003240",
+      "frame_1based": 93,
+      "image_member": "images/GOT-10k_Train_003240/000093.png",
+      "image_sha256": "23a8f8d824604ca9670d13fa6acbf77a95359e480a0c660d1d575de97501a7e7",
+      "distractor_xywh": [
+        613.2666320800781,
+        592.4921874999999,
+        571.5922241210938,
+        288.513671875
+      ],
+      "reviewed_by": "assistant_visual_inspection",
+      "identity_relation": "different_same_class_instance",
+      "roi_source": "visually_verified_Rdisc_prediction",
+      "note": "Approximate instance ROI; includes box background/occluders; not a segmentation or independently drawn annotation."
+    },
+    {
+      "sequence": "GOT-10k_Train_003240",
+      "frame_1based": 94,
+      "image_member": "images/GOT-10k_Train_003240/000094.png",
+      "image_sha256": "585cf7b555395f57496a87ad0f0345fcc15aa8a0dd1eaf64165cfabe55e28287",
+      "distractor_xywh": [
+        622.5293273925781,
+        576.2591400146483,
+        542.3701782226562,
+        333.0215148925781
+      ],
+      "reviewed_by": "assistant_visual_inspection",
+      "identity_relation": "different_same_class_instance",
+      "roi_source": "visually_verified_Rdisc_prediction",
+      "note": "Approximate instance ROI; includes box background/occluders; not a segmentation or independently drawn annotation."
+    },
+    {
+      "sequence": "GOT-10k_Train_001664",
+      "frame_1based": 65,
+      "image_member": "images/GOT-10k_Train_001664/000065.png",
+      "image_sha256": "88667d8aa7564ce52975882d0e42ae97c09643d4b26e96f43e25b8f56ef2120f",
+      "distractor_xywh": [
+        583.4295425415039,
+        296.8389892578125,
+        80.52162170410156,
+        166.11776733398438
+      ],
+      "reviewed_by": "assistant_visual_inspection",
+      "identity_relation": "different_same_class_instance",
+      "roi_source": "visually_verified_Rdisc_prediction",
+      "note": "Approximate instance ROI; includes box background/occluders; not a segmentation or independently drawn annotation."
+    },
+    {
+      "sequence": "GOT-10k_Train_001664",
+      "frame_1based": 70,
+      "image_member": "images/GOT-10k_Train_001664/000070.png",
+      "image_sha256": "6e56bf7a296b1a57a9020360caed6d412d8bbeaa9a1a55a88cddcf308ad9e7b5",
+      "distractor_xywh": [
+        647.6144371032715,
+        390.3719177246094,
+        72.90137481689453,
+        172.45297241210938
+      ],
+      "reviewed_by": "assistant_visual_inspection",
+      "identity_relation": "different_same_class_instance",
+      "roi_source": "visually_verified_Rdisc_prediction",
+      "note": "Approximate instance ROI; includes box background/occluders; not a segmentation or independently drawn annotation."
+    },
+    {
+      "sequence": "GOT-10k_Train_001664",
+      "frame_1based": 74,
+      "image_member": "images/GOT-10k_Train_001664/000074.png",
+      "image_sha256": "9620181c8c8691abf54bba3a4c47621638f43708b23b43d443fefa5f33416c83",
+      "distractor_xywh": [
+        746.5545196533203,
+        424.2890853881836,
+        89.4891357421875,
+        189.9384002685547
+      ],
+      "reviewed_by": "assistant_visual_inspection",
+      "identity_relation": "different_same_class_instance",
+      "roi_source": "visually_verified_Rdisc_prediction",
+      "note": "Approximate instance ROI; includes box background/occluders; not a segmentation or independently drawn annotation."
+    },
+    {
+      "sequence": "GOT-10k_Train_001664",
+      "frame_1based": 75,
+      "image_member": "images/GOT-10k_Train_001664/000075.png",
+      "image_sha256": "b4366ae0204d342cad8f2c34e1b4af9ab18e53e79a5237eb5afd79eacdf624b1",
+      "distractor_xywh": [
+        763.6949195861816,
+        431.4302673339844,
+        86.5254135131836,
+        184.12722778320312
+      ],
+      "reviewed_by": "assistant_visual_inspection",
+      "identity_relation": "different_same_class_instance",
+      "roi_source": "visually_verified_Rdisc_prediction",
+      "note": "Approximate instance ROI; includes box background/occluders; not a segmentation or independently drawn annotation."
+    },
+    {
+      "sequence": "GOT-10k_Train_001664",
+      "frame_1based": 93,
+      "image_member": "images/GOT-10k_Train_001664/000093.png",
+      "image_sha256": "1d98edd89e26595d75e41e7900b6eb351376e6d90dcce10eaa7e3d0e0f574e81",
+      "distractor_xywh": [
+        933.0755310058594,
+        215.7195281982422,
+        73.40808868408203,
+        176.81427001953125
+      ],
+      "reviewed_by": "assistant_visual_inspection",
+      "identity_relation": "different_same_class_instance",
+      "roi_source": "visually_verified_Rdisc_prediction",
+      "note": "Approximate instance ROI; includes box background/occluders; not a segmentation or independently drawn annotation."
+    }
+  ]
+}
