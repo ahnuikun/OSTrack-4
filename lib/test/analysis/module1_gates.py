@@ -85,10 +85,10 @@ def validate_gate_arrays(a, mode):
         raise ValueError('alpha0 did not disable injection')
 
 
-def frame_metrics(a, row):
+def frame_metrics(a, row, gate_validator=validate_gate_arrays):
     if any(not np.isfinite(value).all() for value in a.values()):
         raise ValueError('nonfinite gate evidence')
-    validate_gate_arrays(a, row['mode'])
+    gate_validator(a, row['mode'])
     shapes = dict(score_map=(1, 1, 16, 16), size_map=(1, 2, 16, 16), offset_map=(1, 2, 16, 16),
                   hann=(1, 1, 16, 16), final_kept=(1, 256), padding=(256, 256))
     if any(a[key].shape != shape for key, shape in shapes.items()):
