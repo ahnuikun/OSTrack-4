@@ -155,24 +155,6 @@ class MathTests(unittest.TestCase):
             (root/'list.txt').write_text('GOT-10k_Train_000002\nGOT-10k_Train_000001\n')
             with self.assertRaisesRegex(ValueError, 'ordered'): entry.plan_sequences(root)
 
-    def test_documented_commands_parse_and_analysis_never_loads_gpu(self):
-        document = (PROJECT/'VDRM_IDENTITY_NATIVE_PLAN.md').read_text(encoding='utf-8')
-        blocks = re.findall(r'```(?:lua|css)\n(.*?)```', document, re.S)
-        self.assertEqual(len(blocks), 2)
-        for block in blocks:
-            tokens = shlex.split(block.replace('\\\n', ' ')); i = tokens.index('python')
-            args = tokens[i+1:]; self.assertNotIn('--seed', args)
-            with patch.object(sys, 'argv', args):
-                if 'probe_' in args[0]:
-                    with patch.object(torch.cuda, 'is_available', return_value=True), patch.object(entry, 'run') as run:
-                        entry.main()
-                    self.assertEqual(run.call_args.args, ('output/analysis/identity_offline_v1/screen/identity_offline_results.tar.gz',
-                        './data/got10k/train', './output', 'output/analysis/identity_native_v1'))
-                else:
-                    with patch.object(analyzer, 'check_bundle', return_value=({}, {'sequences': 152})), \
-                         patch.object(analyzer, 'render_report', return_value='fixture'), \
-                         patch.object(torch.cuda, 'is_available', side_effect=AssertionError('GPU access')), \
-                         contextlib.redirect_stdout(io.StringIO()): analyzer.main()
 
 
 class NativeRuntimeTests(unittest.TestCase):

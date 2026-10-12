@@ -58,33 +58,6 @@ def rscore_fixture(root, factory=tiny_model):
 
 
 class CommandTests(unittest.TestCase):
-    def test_documented_commands_parse_no_seed_and_correct_plugins(self):
-        blocks = re.findall(r'```bash\n(.*?)```', (PROJECT / 'VDRM_RSCORE_PROBE.md').read_text(encoding='utf-8'), re.S)
-        self.assertEqual(len(blocks), 4)
-        for block in blocks:
-            tokens = shlex.split(block.replace('\\\n', ''))
-            args = tokens[tokens.index('python') + 1:]
-            self.assertNotIn('--seed', args)
-            with patch.object(sys, 'argv', args):
-                if args[0] == 'tracking/diagnose_vdrm_rscore.py':
-                    if '--check_bundle' in args:
-                        with patch.object(entry, 'check_bundle', return_value=dict(records=179)) as checked, \
-                                patch.object(entry, 'get_dataset', side_effect=AssertionError('dataset accessed')):
-                            entry.main()
-                        checked.assert_called_once_with('output/analysis/frozen_vdrm/rscore_probe.tar.gz')
-                    else:
-                        with patch.object(torch.cuda, 'is_available', return_value=True), patch.object(entry, 'run') as run:
-                            entry.main()
-                        self.assertEqual(run.call_args.args, ('./output', str(Path('output/analysis/frozen_vdrm/rscore_probe.tar.gz')), 'cuda'))
-                elif args[0] == 'tracking/test_uav_suite.py':
-                    parsed = suite.parse_args()
-                    self.assertEqual((parsed.tracker_name, parsed.tracker_param), ('ostrack_rscore', PROBE_CONFIG))
-                    self.assertEqual((parsed.dataset, parsed.threads, parsed.num_gpus), ('got10k_vdrm_dev', 4, 4))
-                else:
-                    self.assertEqual(args[0], 'tracking/analyze_vdrm_module1_dev.py')
-                    with patch.object(analyze, 'get_dataset', side_effect=RuntimeError('parsed')):
-                        with self.assertRaisesRegex(RuntimeError, 'parsed'):
-                            analyze.main()
 
     def test_mismatched_plugin_list_and_duplicate_parameters_fail_before_dataset(self):
         for extra in (['--tracker_names', 'ostrack', 'ostrack'], ['--tracker_params', 'x', 'x']):

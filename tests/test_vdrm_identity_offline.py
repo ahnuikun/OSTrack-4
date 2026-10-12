@@ -164,30 +164,6 @@ class IdentityMathTests(unittest.TestCase):
                 with self.assertRaisesRegex(FileNotFoundError,'Tclean'):
                     cache_entry.run(root,root,root/'new')
 
-    def test_documented_commands_parse_no_seed_and_check_is_cpu_only(self):
-        document=(Path(__file__).resolve().parents[1]/'VDRM_IDENTITY_OFFLINE_PLAN.md').read_text(encoding='utf-8')
-        commands=[shlex.split(block.replace('\\\n',' ')) for block in re.findall(r'```(?:lua|css)\n(.*?)```',document,re.S)]
-        self.assertEqual(len(commands),3)
-        expected={
-            'tracking/cache_vdrm_identity.py':(cache_entry,('./data/got10k/train','./output',
-                'output/analysis/identity_offline_v1/cache','experiments/vdrm_identity/offline_v1.json')),
-            'tracking/train_vdrm_identity.py':(train_entry,('output/analysis/identity_offline_v1/cache',
-                'output/analysis/identity_offline_v1/screen','cuda'))}
-        for tokens in commands:
-            script=next(t for t in tokens if t.startswith('tracking/'))
-            args=tokens[tokens.index(script)+1:];self.assertNotIn('--seed',args)
-            if script in expected:
-                module,values=expected[script]
-                with patch.object(sys,'argv',[script,*args]),patch.object(torch.cuda,'is_available',return_value=True),patch.object(module,'run') as run:
-                    module.main()
-                run.assert_called_once_with(*values)
-            else:
-                with patch.object(sys,'argv',[script,*args]), \
-                        patch.object(torch.cuda,'is_available',side_effect=AssertionError('GPU queried')), \
-                        patch.object(analyze_entry,'check_bundle',return_value=({'dev_pairs':12},{})) as check, \
-                        patch.object(analyze_entry,'render_report',return_value='fixture'),contextlib.redirect_stdout(io.StringIO()):
-                    analyze_entry.main()
-                check.assert_called_once_with('output/analysis/identity_offline_v1/screen/identity_offline_results.tar.gz')
 
     def test_full_cache_writer_real_split_ids_shapes_and_frozen_state(self):
         class FrozenFixture(torch.nn.Module):

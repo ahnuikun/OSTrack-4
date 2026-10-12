@@ -41,7 +41,7 @@ def dataset_plans(root,spec,partition,source):
     names=(root/'list.txt').read_text(encoding='utf-8').splitlines()
     if len(names)!=len(set(names)) or any(not re.fullmatch(r'GOT-10k_Train_\d{6}',n) for n in names):
         raise ValueError('invalid GOT training list')
-    if max(partition['train']+partition['audit'])>=len(names):raise ValueError('GOT train list shorter than registered IDs')
+    if max(i for ids in partition.values() for i in ids)>=len(names):raise ValueError('GOT train list shorter than registered IDs')
     refs={t['sequence']:t for t in source['trajectories']}
     requested=[(split,i,names[i],None) for split,ids in partition.items() for i in ids]
     requested += [('regression',None,n,b[1]) for n,b in protocol_plan(spec['smoke_only']).items()]
@@ -196,13 +196,16 @@ def train_adapters(cache_dir,index,suffix,spec,output_dir):
     return trained,training
 
 
-def evaluate(plans,models,cfg,adapters,source):
+def evaluate(plans,models,cfg,adapters,source,adapter_modes=ARMS):
+    if len(adapter_modes)!=2 or set(adapters)!=set(adapter_modes):raise ValueError('evaluation requires exactly two named adapters')
+    modes=('Rdisc','Tclean')+tuple(adapter_modes)
+    comparison,primary=adapter_modes
     rows=[];payloads={};eval_plan=[];visuals=[]
     refs={t['sequence']:t for t in source['trajectories']}
     with torch.no_grad():
         for number,plan in enumerate([p for p in plans if p['population']!='train']):
             name=plan['sequence'];population=plan['population']
-            trackers={a:NativeTracker(models['Tclean'] if a=='Tclean' else models['Rdisc'],cfg) for a in MODES}
+            trackers={a:NativeTracker(models['Tclean'] if a=='Tclean' else models['Rdisc'],cfg) for a in modes}
             initial=read_rgb(plan['frames'][0])
             for t in trackers.values():t.initialize(initial,dict(init_bbox=plan['gt'][0].tolist()))
             eval_plan.append(dict(population=population,sequence=name,sequence_id=plan['sequence_id'],stop=plan['stop'],initial_box=plan['gt'][0].tolist()))
@@ -233,7 +236,7 @@ def evaluate(plans,models,cfg,adapters,source):
                             raise RuntimeError('regression baseline differs from Step01: '+name+'/'+str(frame)+' '+arm)
                     if arm=='Rdisc':base_snapshot=snapshot;base_row=r
                 before={a:(list(t.state),t.frame_id) for a,t in trackers.items()}
-                for arm in MODES:
+                for arm in modes:
                     if arm=='Rdisc':
                         row=dict(base_row,scope='shared');row['arrays_member']=base_row['arrays_member'];rows.append(row);continue
                     net=models['Tclean'] if arm=='Tclean' else models['Rdisc']
@@ -243,16 +246,16 @@ def evaluate(plans,models,cfg,adapters,source):
                     save(arm,'shared',out,base_snapshot,base_row['anchor_xywh'],box,values.get('actual_norm_ratio',0.))
                 if before!={a:(list(t.state),t.frame_id) for a,t in trackers.items()}:raise RuntimeError('shared evaluation advanced tracker')
                 if input_hashes(base_snapshot['inputs'])!=base_snapshot['input_sha256']:raise RuntimeError('shared inputs mutated')
-            if population=='audit':
+            if population in ('audit','confirmation'):
                 # Keep a small set of actual scene images for the local review.
                 rr={r['frame_1based']:r for r in rows if r['sequence']==name and r['scope']=='closed' and r['arm']=='Rdisc'}
-                learned={arm:{r['frame_1based']:r for r in rows if r['sequence']==name and r['scope']=='closed' and r['arm']==arm} for arm in ARMS}
+                learned={arm:{r['frame_1based']:r for r in rows if r['sequence']==name and r['scope']=='closed' and r['arm']==arm} for arm in adapter_modes}
                 visible=[f for f,r in rr.items() if r['visible']]
                 selected={1:['initial_template']}
                 if visible:
-                    for label,frame in [('largest_full_gain',max(visible,key=lambda f:learned['full'][f]['iou']-rr[f]['iou'])),
-                            ('largest_full_loss',min(visible,key=lambda f:learned['full'][f]['iou']-rr[f]['iou'])),
-                            ('largest_arm_difference',max(visible,key=lambda f:abs(learned['full'][f]['iou']-learned['prototype'][f]['iou'])))]:
+                    for label,frame in [('largest_'+primary+'_gain',max(visible,key=lambda f:learned[primary][f]['iou']-rr[f]['iou'])),
+                            ('largest_'+primary+'_loss',min(visible,key=lambda f:learned[primary][f]['iou']-rr[f]['iou'])),
+                            ('largest_arm_difference',max(visible,key=lambda f:abs(learned[primary][f]['iou']-learned[comparison][f]['iou'])))]:
                         selected.setdefault(frame,[]).append(label)
                 for frame,labels in selected.items():
                     member=f'images/{name}_{frame:06d}.png';payloads[member]=png_bytes(read_rgb(plan['frames'][frame-1]))

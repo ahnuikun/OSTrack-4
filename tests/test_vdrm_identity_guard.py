@@ -117,23 +117,6 @@ class GuardMathTests(unittest.TestCase):
             with patch.object(entry, 'load_screen_heads', side_effect=AssertionError('source read')):
                 with self.assertRaises(FileExistsError): entry.run('missing','missing','missing',root)
 
-    def test_documented_commands_parse_without_seed(self):
-        document = (PROJECT/'VDRM_IDENTITY_GUARD_PLAN.md').read_text(encoding='utf-8')
-        commands = re.findall(r'```(?:lua|css)\n(.*?)```', document, re.S)
-        self.assertEqual(len(commands), 2)
-        for command in commands:
-            tokens = shlex.split(command.replace('\\\n',' ')); args = tokens[tokens.index('python')+1:]
-            self.assertNotIn('--seed', args)
-            with patch.object(sys, 'argv', args):
-                if 'screen_' in args[0]:
-                    with patch.object(torch.cuda, 'is_available', return_value=True), patch.object(entry, 'run') as run: entry.main()
-                    self.assertEqual(run.call_args.args, ('output/analysis/identity_offline_v1/screen/identity_offline_results.tar.gz',
-                        './data/got10k/train','./output','output/analysis/identity_guard_v1'))
-                else:
-                    with patch.object(analyzer, 'check_bundle', return_value=({'sequences': []}, {})), \
-                         patch.object(analyzer, 'render_report', return_value='fixture'), \
-                         patch.object(torch.cuda, 'is_available', side_effect=AssertionError('GPU access')), \
-                         contextlib.redirect_stdout(io.StringIO()): analyzer.main()
 
 
 class GuardRuntimeTests(unittest.TestCase):

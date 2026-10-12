@@ -67,23 +67,6 @@ class CueMathTests(unittest.TestCase):
                 patch.object(entry,'prepare_response_models',side_effect=AssertionError('weights accessed')):
             entry.main()
 
-    def test_documented_commands_parse_with_exact_paths(self):
-        document=(Path(__file__).resolve().parents[1]/'VDRM_RQUAL_CUE_AUDIT.md').read_text(encoding='utf-8')
-        commands=[]
-        for block in re.findall(r'```(?:lua|css)\n(.*?)```',document,re.S):
-            tokens=shlex.split(block.replace('\\\n',' '))
-            commands.append(tokens[tokens.index('tracking/probe_vdrm_candidate_cues.py')+1:])
-        self.assertEqual(len(commands),2)
-        self.assertTrue(all('--seed' not in args for args in commands))
-        with patch.object(sys,'argv',['probe_vdrm_candidate_cues.py']+commands[0]), \
-                patch.object(entry.torch.cuda,'is_available',return_value=True), patch.object(entry,'run') as run:
-            entry.main()
-        run.assert_called_once_with('output/analysis/frozen_quality/rqual_early_probe.tar.gz','./output',
-                                    'output/analysis/frozen_quality/rqual_cue_audit.tar.gz','cuda')
-        with patch.object(sys,'argv',['probe_vdrm_candidate_cues.py']+commands[1]), \
-                patch.object(entry,'check_bundle',return_value=({'records':298},{'groups':{},'note':'test'},[])) as check:
-            entry.main()
-        check.assert_called_once_with('output/analysis/frozen_quality/rqual_cue_audit.tar.gz')
 
     def test_modes_are_mutually_exclusive(self):
         with patch.object(sys,'argv',['probe_vdrm_candidate_cues.py','--bundle','a','--check_bundle','b']), \

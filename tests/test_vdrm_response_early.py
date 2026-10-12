@@ -39,31 +39,6 @@ class EarlyProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             protocol('arbitrary')
 
-    def test_documented_commands_parse_and_resolve_separate_paths(self):
-        document = (PROJECT / 'VDRM_RRESP_EARLY_AUDIT.md').read_text(encoding='utf-8')
-        commands = 0
-        for block in re.findall(r'```\w+\n(.*?)```', document, re.S):
-            if 'python tracking/' not in block:
-                continue
-            tokens = shlex.split(block.replace('\\\n', ''))
-            args = tokens[tokens.index('python') + 1:]
-            self.assertNotIn('--seed', args)
-            commands += 1
-            with patch.object(sys, 'argv', args):
-                if args[0] == 'tracking/diagnose_vdrm_response.py':
-                    with patch.object(torch.cuda, 'is_available', return_value=True), patch.object(entry, 'run') as run:
-                        entry.main()
-                    self.assertEqual(run.call_args.args, ('./output', str(Path(
-                        'output/analysis/frozen_response_early/rresp_early_probe.tar.gz')), 'cuda'))
-                    self.assertEqual(run.call_args.kwargs, {'profile': 'early_failure'})
-                else:
-                    self.assertEqual(args[0], 'tracking/analyze_vdrm_response.py')
-                    with patch.object(analyzer, 'run') as run:
-                        analyzer.main()
-                    self.assertEqual(tuple(Path(a).as_posix() for a in run.call_args.args), (
-                        'output/analysis/frozen_response_early/rresp_early_probe.tar.gz',
-                        'output/analysis/frozen_response_early/rresp_early_analysis.tar.gz'))
-        self.assertEqual(commands, 2)
 
     def test_uniform_logit_shift_can_change_hann_but_constant_energy_cannot(self):
         logits = np.array([2., 0.], dtype=np.float32)

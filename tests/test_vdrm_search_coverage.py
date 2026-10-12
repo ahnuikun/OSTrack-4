@@ -110,23 +110,6 @@ class CoverageMathTests(unittest.TestCase):
         x = synthetic_coverage(); x['source_scores'][1, 0] = -1
         with self.assertRaisesRegex(ValueError, 'support/response'): sequence_evidence('fixture', x)
 
-    def test_documented_commands_parse_without_seed_or_old_txt(self):
-        document = (PROJECT/'VDRM_SEARCH_COVERAGE_PLAN.md').read_text(encoding='utf-8')
-        commands = re.findall(r'```(?:lua|css)\n(.*?)```', document, re.S)
-        self.assertEqual(len(commands), 2)
-        for command in commands:
-            tokens = shlex.split(command.replace('\\\n',' ')); args = tokens[tokens.index('python')+1:]
-            self.assertNotIn('--seed', args)
-            with patch.object(sys,'argv',args):
-                if 'probe_' in args[0]:
-                    with patch.object(torch.cuda,'is_available',return_value=True), patch.object(entry,'run') as run: entry.main()
-                    self.assertEqual(run.call_args.args,('output/analysis/identity_guard_v1/identity_guard_results.tar.gz',
-                        './data/got10k/train','./output','output/analysis/search_coverage_v1'))
-                else:
-                    with patch.object(analyzer,'check_bundle',return_value=({'sequences':[]},{})), \
-                         patch.object(analyzer,'render_report',return_value='fixture'), \
-                         patch.object(torch.cuda,'is_available',side_effect=AssertionError('GPU access')), \
-                         contextlib.redirect_stdout(io.StringIO()): analyzer.main()
 
 
 class CoverageRuntimeTests(unittest.TestCase):

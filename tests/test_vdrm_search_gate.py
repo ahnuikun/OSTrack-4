@@ -193,21 +193,6 @@ class GateEntryTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'numeric value differs'):
                     analyzer.verify(source, root/'output')
 
-    def test_documented_cli_is_accepted_without_seed(self):
-        doc = (PROJECT/'VDRM_SEARCH_GATE_PLAN.md').read_text(encoding='utf-8')
-        command = re.search(r'```css\n(.*?)\n```', doc, re.S).group(1).replace('\\\n', '')
-        args = shlex.split(command)
-        self.assertNotIn('--seed', args)
-        with patch.object(sys, 'argv', args[1:]), patch.object(entry, 'run') as run:
-            entry.main()
-        run.assert_called_once_with('output/analysis/search_coverage_v1/search_coverage_results.tar.gz',
-                                    'output/analysis/search_gate_v1')
-        command = re.findall(r'```css\n(.*?)\n```', doc, re.S)[1].replace('\\\n', '')
-        args = shlex.split(command)
-        with patch.object(sys, 'argv', args[1:]), patch.object(analyzer, 'verify') as verify:
-            analyzer.main()
-        verify.assert_called_once_with('output/analysis/search_coverage_v1/search_coverage_results.tar.gz',
-                                       'output/analysis/search_gate_v1')
 
 
 if __name__ == '__main__':

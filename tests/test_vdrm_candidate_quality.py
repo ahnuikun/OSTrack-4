@@ -288,59 +288,6 @@ class QualityProbeTests(unittest.TestCase):
             self.assertFalse((Path(tracker.results_dir) / (sequence.name + '.txt')).exists())
 
 
-class QualityCommandTests(unittest.TestCase):
-    def test_document_commands_and_default_seed_epoch_and_paths(self):
-        from tracking import train, test_uav_suite, analyze_vdrm_module1_dev, analyze_vdrm_response
-        project = Path(__file__).resolve().parents[1]
-        document = (project / 'VDRM_RQUAL_PLAN.md').read_text(encoding='utf-8')
-        class Parsed(Exception):
-            pass
-        count = 0
-        for block in re.findall(r'```\w+\n(.*?)```', document, re.S):
-            if 'python tracking/' not in block:
-                continue
-            tokens = shlex.split(block.replace('\\\n', ''))
-            index = tokens.index('python')
-            script, args = tokens[index+1], tokens[index+2:]
-            self.assertNotIn('--seed', args)
-            count += 1
-            for option in ('--config', '--tracker_param', '--reference'):
-                if option in args:
-                    self.assertTrue((project / 'experiments/ostrack' / (args[args.index(option)+1]+'.yaml')).is_file())
-            with patch.object(sys, 'argv', [script, *args]):
-                if script == 'tracking/train.py':
-                    with patch.object(train.os, 'system', return_value=0) as launch:
-                        train.main()
-                    self.assertIn('--seed 42', launch.call_args.args[0])
-                    self.assertIn('--nproc_per_node 4', launch.call_args.args[0])
-                elif script == 'tracking/check_vdrm_response.py':
-                    self.assertEqual(args[args.index('--checkpoint')+1],
-                        f'output/checkpoints/train/ostrack/{CONFIG}/OSTrack_ep0020.pth.tar')
-                    with patch.object(checker, 'default_config', side_effect=Parsed):
-                        with self.assertRaises(Parsed):
-                            checker.main()
-                elif script == 'tracking/diagnose_vdrm_response.py':
-                    with patch.object(entry.torch.cuda, 'is_available', return_value=True), patch.object(entry, 'run') as call:
-                        entry.main()
-                    self.assertEqual(call.call_args.kwargs, dict(profile='early_failure', candidate_arm='Rqual'))
-                    self.assertEqual(call.call_args.args[1], 'output/analysis/frozen_quality/rqual_early_probe.tar.gz')
-                elif script == 'tracking/analyze_vdrm_response.py':
-                    with patch.object(analyze_vdrm_response, 'run') as call:
-                        analyze_vdrm_response.main()
-                    self.assertEqual(call.call_args.args, ('output/analysis/frozen_quality/rqual_early_probe.tar.gz',
-                                                          'output/analysis/frozen_quality/rqual_early_analysis.tar.gz'))
-                elif script == 'tracking/test_uav_suite.py':
-                    parsed = test_uav_suite.parse_args()
-                    self.assertEqual(parsed.dataset, 'got10k_vdrm_dev')
-                    self.assertEqual((parsed.num_gpus, parsed.threads), (4, 4))
-                elif script == 'tracking/analyze_vdrm_module1_dev.py':
-                    with patch.object(analyze_vdrm_module1_dev, 'get_dataset', side_effect=Parsed):
-                        with self.assertRaises(Parsed):
-                            analyze_vdrm_module1_dev.main()
-                    self.assertEqual(args[args.index('--report_name')+1], 'vdrm_rqual_dev')
-                else:
-                    self.fail(script)
-        self.assertEqual(count, 7)
 
 
 if __name__ == '__main__':

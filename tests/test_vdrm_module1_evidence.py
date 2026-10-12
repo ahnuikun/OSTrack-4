@@ -158,31 +158,6 @@ def test_rehashed_archive_corruption_rejected(tmp_path, kind):
         check_bundle(bundle)
 
 
-def test_document_commands_parse():
-    document = (PROJECT / 'VDRM_MODULE1_STEPWISE_PLAN.md').read_text(encoding='utf-8')
-    count = 0
-    for block in re.findall(r'```bash\n(.*?)```', document, re.S):
-        if 'python tracking/' not in block:
-            continue
-        tokens = shlex.split(block.replace('\\\n', ''))
-        args = tokens[tokens.index('python') + 1:]
-        assert '--seed' not in args
-        with patch.object(sys, 'argv', args):
-            if args[0].endswith('diagnose_vdrm_module1_evidence.py'):
-                if '--check_bundle' in args:
-                    with patch.object(entry, 'check_bundle', return_value=({'records': 499}, [], '')) as check:
-                        entry.main()
-                    check.assert_called_once()
-                else:
-                    with patch.object(entry, 'run') as run:
-                        entry.main()
-                    assert Path(run.call_args.args[1]) == Path('output/analysis/module1_step01/module1_evidence.tar.gz')
-            else:
-                with patch.object(analyzer, 'run') as run:
-                    analyzer.main()
-                assert Path(run.call_args.args[1]) == Path('output/analysis/module1_step01/module1_analysis.tar.gz')
-        count += 1
-    assert count == 3
 
 
 def test_existing_output_rejected_before_cuda_or_data(tmp_path):

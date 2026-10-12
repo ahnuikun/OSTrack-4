@@ -53,13 +53,13 @@ def hash_json(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,allow_nan=False).encode()).hexdigest()
 
 
-def summarize(rows):
+def summarize(rows,populations=('audit','regression'),modes=MODES,baseline_arm='Rdisc'):
     result={}
-    for population in ('audit','regression'):
+    for population in populations:
         for scope in ('shared','closed'):
             selected=[r for r in rows if r['population']==population and r['scope']==scope]
-            baseline={(r['sequence'],r['frame_1based']):r for r in selected if r['arm']=='Rdisc'}
-            for arm in MODES:
+            baseline={(r['sequence'],r['frame_1based']):r for r in selected if r['arm']==baseline_arm}
+            for arm in modes:
                 rr=[r for r in selected if r['arm']==arm]
                 sequences=sorted({r['sequence'] for r in rr});deltas=[];normal=[];partial=[]
                 repairs=losses=harms=gains=0

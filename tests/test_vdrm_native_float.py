@@ -59,32 +59,6 @@ def rewrite_bundle(source, target, mutate):
 
 
 class ProtocolTests(unittest.TestCase):
-    def test_commands_match_parser_no_seed_no_old_result_dependency(self):
-        document = (PROJECT / 'VDRM_NATIVE_FLOAT_AUDIT.md').read_text(encoding='utf-8')
-        blocks = re.findall(r'```bash\n(.*?)```', document, re.S)
-        self.assertEqual(len(blocks), 3)
-        for block in blocks:
-            tokens = shlex.split(block.replace('\\\n', ''))
-            index = tokens.index('python')
-            args = tokens[index + 1:]
-            self.assertEqual(args[0], 'tracking/diagnose_vdrm_native_float.py')
-            self.assertNotIn('--seed', args)
-            with patch.object(sys, 'argv', args), contextlib.redirect_stdout(io.StringIO()):
-                if '--check_bundle' in args:
-                    with patch.object(entry, 'check_bundle', return_value=dict(records=102, fork_records=102)) as check, \
-                            patch.object(entry, 'get_dataset', side_effect=AssertionError('unexpected dataset access')), \
-                            patch.object(entry, 'load_models', side_effect=AssertionError('unexpected model access')):
-                        entry.main()
-                    check.assert_called_once()
-                else:
-                    self.assertEqual(tokens[0], 'CUDA_VISIBLE_DEVICES=0')
-                    with patch.object(torch.cuda, 'is_available', return_value=True), patch.object(entry, 'run') as run:
-                        entry.main()
-                    save_dir, output, device = run.call_args.args
-                    self.assertEqual(Path(save_dir), Path('./output'))
-                    self.assertEqual(device, 'cuda')
-                    name = 'native_float_audit_repeat.tar.gz' if '--output' in args else 'native_float_audit.tar.gz'
-                    self.assertEqual(Path(output), Path('output/analysis/frozen_vdrm') / name)
 
     def test_assert_exact_detects_changed_visual_route_and_ce_outputs(self):
         reference = {key: torch.zeros(1) for key in entry.REPLAY_KEYS}

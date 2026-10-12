@@ -79,27 +79,6 @@ def synthetic_fixture(root, factory=tiny_model):
 
 
 class PlanningTests(unittest.TestCase):
-    def test_exact_documented_server_commands_parse_without_seed(self):
-        document = (PROJECT / 'VDRM_FROZEN_FAILURE_DIAGNOSTICS.md').read_text(encoding='utf-8')
-        commands = re.findall(r'```bash\n(.*?)```', document, re.S)
-        self.assertEqual(len(commands), 3)
-        for block in commands:
-            tokens = shlex.split(block.replace('\\\n', ''))
-            index = tokens.index('python')
-            args = tokens[index + 1:]
-            self.assertNotIn('--seed', args)
-            with patch.object(sys, 'argv', args):
-                if '--check_bundle' in args:
-                    with patch.object(entry, 'check_bundle', return_value=dict(selected_frames=5, records=15)), \
-                            patch.object(entry, 'env_settings', side_effect=AssertionError('unexpected environment read')), \
-                            contextlib.redirect_stdout(io.StringIO()):
-                        entry.main()
-                else:
-                    with patch.object(entry, 'env_settings', return_value=SimpleNamespace(results_path='/srv/output/test/tracking_results')), \
-                            patch.object(entry, 'run') as launch:
-                        entry.main()
-                    self.assertEqual(Path(launch.call_args.args[1]), Path('/srv/output/test/tracking_results') / 'ostrack')
-                    self.assertEqual(launch.call_args.args[3], 'cuda')
 
     def test_coverage_and_actual_border_support(self):
         self.assertEqual(overlapping_fraction([0, 0, 10, 10], [5, 0, 10, 10]), .5)

@@ -47,55 +47,6 @@ def response_fixture(root, factory=response_model):
     return dataset
 
 
-class CommandTests(unittest.TestCase):
-    def test_documented_commands_parse_without_seed(self):
-        text = (PROJECT / 'VDRM_RRESP_PLAN.md').read_text(encoding='utf-8')
-        count = 0
-        for block in re.findall(r'```\w+\n(.*?)```', text, re.S):
-            if 'python tracking/' not in block:
-                continue
-            tokens = shlex.split(block.replace('\\\n', ''))
-            index = tokens.index('python')
-            script, args = tokens[index + 1], tokens[index + 2:]
-            self.assertNotIn('--seed', args)
-            count += 1
-            for option in ('--config', '--tracker_param', '--reference'):
-                if option in args:
-                    name = args[args.index(option) + 1]
-                    self.assertTrue((PROJECT / 'experiments/ostrack' / (name + '.yaml')).is_file())
-            with patch.object(sys, 'argv', [script, *args]):
-                if script == 'tracking/train.py':
-                    with patch.object(train.os, 'system', return_value=0) as launch:
-                        train.main()
-                    self.assertIn('--seed 42', launch.call_args.args[0])
-                    self.assertIn('--nproc_per_node 4', launch.call_args.args[0])
-                elif script == 'tracking/check_vdrm_response.py':
-                    self.assertEqual(args[args.index('--checkpoint') + 1],
-                                     f'output/checkpoints/train/ostrack/{CONFIG}/OSTrack_ep0300.pth.tar')
-                    with patch.object(check_entry, 'default_config', side_effect=ParsedCommand):
-                        with self.assertRaises(ParsedCommand):
-                            check_entry.main()
-                elif script == 'tracking/test_uav_suite.py':
-                    parsed = test_uav_suite.parse_args()
-                    self.assertEqual(parsed.dataset, 'got10k_vdrm_dev')
-                    self.assertEqual((parsed.num_gpus, parsed.threads), (4, 4))
-                elif script == 'tracking/analyze_vdrm_module1_dev.py':
-                    with patch.object(analyze_vdrm_module1_dev, 'get_dataset', side_effect=ParsedCommand):
-                        with self.assertRaises(ParsedCommand):
-                            analyze_vdrm_module1_dev.main()
-                elif script == 'tracking/diagnose_vdrm_response.py':
-                    if '--check_bundle' in args:
-                        with patch.object(entry, 'check_bundle', return_value={'records': 179}):
-                            entry.main()
-                    else:
-                        with patch.object(entry.torch.cuda, 'is_available', return_value=True), \
-                                patch.object(entry, 'run') as run:
-                            entry.main()
-                        self.assertEqual(Path(run.call_args.args[1]).as_posix(),
-                                         'output/analysis/frozen_response/rresp_probe.tar.gz')
-                else:
-                    self.fail(script)
-        self.assertEqual(count, 7)
 
 
 class ProbeTests(unittest.TestCase):

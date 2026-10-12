@@ -156,14 +156,3 @@ def test_actual_entry_full_fixture_and_output_protection(tmp_path):
     previous = output.read_bytes()
     with pytest.raises(FileExistsError): entry.run(source, output, path)
     assert output.read_bytes() == previous
-
-
-def test_documented_cli_matches_parser():
-    document = (entry.PROJECT / 'VDRM_MODULE1_STEP02_PARTS_PLAN.md').read_text(encoding='utf-8')
-    commands = [x for x in re.findall(r'```bash\n(.*?)```', document, re.S) if 'python tracking/' in x]
-    assert len(commands) == 1
-    args = shlex.split(commands[0].replace('\\\n', ''))[1:]
-    with patch.object(sys, 'argv', args), patch.object(entry, 'run') as run:
-        entry.main()
-    assert run.call_args.args[:2] == ('output/analysis/module1_step01/module1_evidence.tar.gz',
-                                    'output/analysis/module1_step02/module1_parts.tar.gz')

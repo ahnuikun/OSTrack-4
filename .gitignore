@@ -161,6 +161,8 @@ cython_debug/
 # OSTrack large local artifacts
 /data/
 /output/
+# Historical experiment plans and local analysis reports are not published.
+/VDRM_*.md
 /pretrained_models/
 /checkpoints/
 /tracking_results/
