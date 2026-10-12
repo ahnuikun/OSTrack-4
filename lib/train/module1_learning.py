@@ -30,6 +30,13 @@ def insertion_features(module,tokens,kwargs,output):
 
 
 class ResidualAdapter(nn.Module):
+    """Bounded correction with a SHARED output subspace of at most ``width``.
+
+    ``full`` only disables projection onto the four template prototypes. It
+    does not mean unrestricted 768-dimensional output: value(h) lies in the
+    column space of value.weight, shared by every token and training frame.
+    Keep width=32 for exact historical replay; capacity fixes must opt in.
+    """
     def __init__(self,dimension=768,width=32,space='full'):
         super().__init__()
         if space not in ARMS:raise ValueError('unknown residual space')
