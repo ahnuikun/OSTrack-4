@@ -6,6 +6,7 @@ four training frames establishes memorization only, not tracking robustness.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import sys
 
@@ -22,6 +23,7 @@ from lib.test.analysis.module1_direction import decode_metrics
 from lib.test.analysis.frozen_failure_diagnostics import CONFIGS, dump_json, write_bundle
 from tracking.diagnose_vdrm_frozen_failures import load_models, state_hash
 from tracking.diagnose_vdrm_module1_numerics import backend_state
+from tracking.diagnose_vdrm_native_float import npz_bytes
 from tracking.diagnose_vdrm_module1_learnability import prepare, record, fit_run, adapter_delta
 from tracking.vdrm_diagnostics.module1_numeric_suffix import CachedSuffix
 
@@ -53,16 +55,32 @@ def check_bundle(path):
     if (t['case_ids'] != ids or t['updates'] != spec['steps'] or t['frame_exposures'] != len(ids)*spec['steps']
             or t['parameter_count'] != 3*768*128 or len(t['trace']) != spec['steps']):
         raise ValueError('changed training budget')
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(spec['seed']); initial = state_hash(ResidualAdapter(width=128))
+    # A seed is not a portable serialization of initial parameters. Historical
+    # v1 archives only recorded their hash; never claim independent initial-
+    # weight verification by rebuilding a random model on a different runtime.
+    version=m.get('version',1)
+    if version not in (1,2): raise ValueError('unsupported capacity evidence version')
+    if not re.fullmatch('[0-9a-f]{64}',t['initial_sha256']): raise ValueError('invalid initial hash')
+    if version==2:
+        initial_arrays=load_np(d[m['initial_weights_member']])
+        with torch.random.fork_rng(devices=[]):
+            probe=ResidualAdapter(width=128)
+        probe.load_state_dict({k:torch.from_numpy(v) for k,v in initial_arrays.items()},strict=True)
+        if any(not np.isfinite(v).all() for v in initial_arrays.values()) or initial_arrays['value.weight'].any():
+            raise ValueError('invalid zero-correction initialization')
+        if state_hash(probe)!=t['initial_sha256']: raise ValueError('saved initial weights mismatch')
+        initial_verification='saved_parameters_hash_verified'
+    else:
+        initial_verification='unavailable_legacy_hash_only'
     weights = load_np(d[t['weights_member']])
     final = visual_hash({'probe.'+k:torch.from_numpy(v) for k,v in weights.items()})
-    if initial != t['initial_sha256'] or final != t['final_sha256'] or final == initial:
-        raise ValueError('wrong initial/final weights')
+    if final != t['final_sha256'] or final == t['initial_sha256']:
+        raise ValueError('wrong final weights or no learning')
     for step, tr in enumerate(t['trace'], 1):
         if tr['step'] != step or any(not np.isfinite(v) or v < 0 for k,v in tr.items() if k!='step'):
             raise ValueError('invalid optimizer trace')
     allowed = {'manifest.json','cases.json','rows.json','controls.json','training.json',t['weights_member']}
+    if version==2: allowed.add(m['initial_weights_member'])
     ci = {c['case_id']:c for c in cases}
     for c in cases: allowed.update((c['cache_member'],c['source_vectors_member']))
     bases = {i:load_np(d[ci[i]['cache_member']]) for i in ids}
@@ -85,6 +103,7 @@ def check_bundle(path):
     last=[r for r in rows if r['step']==spec['steps']]
     repaired=sum(ci[r['case_id']]['baseline_iou']<.5<=r['hann_iou'] for r in last)
     return dict(smoke_only=spec['smoke_only'],cases=len(cases),optimizer_updates=t['updates'],
+                initial_weights_verification=initial_verification,
                 capacity_repair_passed=not spec['smoke_only'] and repaired==len(cases),
                 tracking_performance_passed=False,repairs=repaired,
                 mean_iou=float(np.mean([r['hann_iou'] for r in last])),
@@ -124,12 +143,16 @@ def run(save_dir, source, output, smoke=False):
             else:
                 delta=torch.from_numpy(v[arm]).cuda();previous=old_rows[c['case_id'],arm,0]
             controls.append(record(p,suffix,delta,arm,0,payloads,load_np(data[previous['arrays_member']])))
-    torch.manual_seed(spec['seed']);initial=state_hash(ResidualAdapter(width=128))
+    torch.manual_seed(spec['seed']);initial_model=ResidualAdapter(width=128);initial=state_hash(initial_model)
+    initial_member='weights/initial.npz'
+    payloads[initial_member]=npz_bytes({k:v.detach().numpy() for k,v in initial_model.state_dict().items()})
     print(f'CAPACITY FIX PRECHECK PASSED: {len(cases)} frames; one width128 task fit; {spec["steps"]} updates',flush=True)
     training,rows=fit_run(prepared,suffix,'shared_task',spec,payloads,initial)
     after=state_hash(suffix)
     if before!=after or any(p.grad is not None or p.requires_grad for p in suffix.parameters()): raise RuntimeError('frozen suffix changed')
-    m=dict(kind='vdrm_module1_capacity_fix',protocol=spec,source_sha256=file_hash(source),source_smoke_only=old['protocol']['smoke_only'],
+    m=dict(kind='vdrm_module1_capacity_fix',version=2,initial_weights_member=initial_member,
+           initializer_runtime=dict(torch_version=str(torch.__version__),cpu_capability=torch.backends.cpu.get_cpu_capability()),
+           protocol=spec,source_sha256=file_hash(source),source_smoke_only=old['protocol']['smoke_only'],
            selected_source_case_ids=[c['case_id'] for c in cases],source_control_parity=True,suffix_before=before,suffix_after=after,
            provenance=provenance,backend=backend_state())
     payloads.update({'cases.json':dump_json(cases),'rows.json':dump_json(rows),'controls.json':dump_json(controls),'training.json':dump_json(training)})
