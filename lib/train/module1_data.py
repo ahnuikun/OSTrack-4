@@ -37,6 +37,42 @@ def worker_seed(worker_id):
     torch.set_num_threads(1)
 
 
+def precheck_source_images(source, max_sequences=100):
+    """Find a decodable image without requiring the first sequence to exist.
+
+    This is a bounded availability probe, not a full dataset integrity audit.
+    It changes neither the sequence/class lists nor the sampler's random state;
+    missing images encountered during training still use its normal retry path.
+    """
+    count = source.get_num_sequences()
+    if not count:
+        raise ValueError('empty training dataset: ' + source.get_name())
+    if max_sequences < 1:
+        raise ValueError('max_sequences must be positive')
+    limit = min(count, max_sequences)
+    last_error = None
+    for seq_id in range(limit):
+        info = source.get_sequence_info(seq_id)
+        sequence = source.sequence_list[seq_id]
+        try:
+            frames, _, _ = source.get_frames(seq_id, [0], info)
+            if (not frames or frames[0] is None or np.size(frames[0]) == 0
+                    or not np.isfinite(frames[0]).all()):
+                raise ValueError('decoded image is missing, empty or non-finite')
+        except Exception as error:
+            # Match the sampler's image-read retry behavior. Annotation loading
+            # above remains strict; do not hide invalid annotation/config errors.
+            last_error = error
+            print(f'PRECHECK WARNING {source.get_name()}: sequence={sequence!r}, frame=0: '
+                  f'{type(error).__name__}: {error}; trying next sequence', flush=True)
+            continue
+        print(f'DATA PRECHECK {source.get_name()}: decoded sequence={sequence!r}, frame=0; '
+              f'failed_probes={seq_id} (sample check only)', flush=True)
+        return
+    raise ValueError(f'no readable image in {source.get_name()}: tried {limit}/{count} '
+                     f'sequences at frame 0; root={source.root}') from last_error
+
+
 def make_loader(cfg, save_dir, micro_batch, workers, smoke=False):
     settings = Settings()
     settings.local_rank = -1
@@ -58,13 +94,7 @@ def make_loader(cfg, save_dir, micro_batch, workers, smoke=False):
     manifest = []
     for source in dataset.datasets:
         count = source.get_num_sequences()
-        if not count:
-            raise ValueError('empty training dataset: ' + source.get_name())
-        # Direct decode cannot be hidden by TrackingSampler's retry loop.
-        info = source.get_sequence_info(0)
-        frames, _, _ = source.get_frames(0, [0], info)
-        if not frames or frames[0] is None or not np.isfinite(frames[0]).all():
-            raise ValueError('unreadable first image: ' + source.get_name())
+        precheck_source_images(source)
         manifest.append(dict(dataset=source.get_name(), root=str(source.root), sequences=count))
     if smoke:
         dataset = FourDatasetSmoke(dataset, 2 * micro_batch)
