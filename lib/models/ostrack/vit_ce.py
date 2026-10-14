@@ -212,6 +212,7 @@ class VisionTransformerCE(VisionTransformer):
                 removed_indexes_s.append(removed_index_s)
 
             if self.vdrm is not None and i == self.vdrm_insert_index:
+                before_vdrm = x
                 x, vdrm_diagnostics = self.vdrm(
                     x,
                     template_length=global_index_t.shape[1],
@@ -219,6 +220,18 @@ class VisionTransformerCE(VisionTransformer):
                     search_global_index=global_index_s,
                     search_grid_size=int(math.sqrt(lens_x)),
                 )
+
+                adapter = getattr(self, 'module1_adapter', None)
+                if adapter is not None and not getattr(self, 'module1_adapter_disabled', False):
+                    from lib.models.layers.module1_adapter import insertion_features
+                    start = global_index_t.shape[1]
+                    features = insertion_features(self.vdrm, before_vdrm,
+                        dict(template_length=start, template_bbox=template_bbox), (x, vdrm_diagnostics))
+                    delta = adapter(*features)
+                    x = torch.cat((before_vdrm[:, :start], features[0] + delta), dim=1)
+                    actual = x[:, start:] - features[0]
+                    vdrm_diagnostics['module1_norm_ratio'] = (actual.flatten(1).norm(dim=1) /
+                        features[-1].flatten(1).norm(dim=1).clamp_min(1e-12))
 
         x = self.norm(x)
         lens_x_new = global_index_s.shape[1]

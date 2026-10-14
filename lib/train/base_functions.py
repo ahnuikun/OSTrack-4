@@ -26,6 +26,8 @@ def validate_vdrm_experiment_contract(cfg, actual_seed=None):
         if getattr(cfg.TRAIN, 'VDRM_FROZEN_BASE_CONFIG', '') or getattr(cfg.MODEL.VDRM, 'DISCRIMINATIVE_ROUTE', False):
             raise ValueError('frozen/discriminative options require a named Rfreeze/Rdisc arm')
         return
+    if arm in ('module1', 'module1_scratch'):
+        raise ValueError('Use tracking/train_vdrm_module1_formal.py for the registered adapter loss and optimizer')
     if arm not in {"tclean", "ronly", "rfreeze", "rdisc", "rresp", "rqual"}:
         raise ValueError(
             "TRAIN.VDRM_EXPERIMENT_ARM must be empty, 'tclean', or "

@@ -115,7 +115,13 @@ class TrackingSampler(torch.utils.data.Dataset):
             TensorDict - dict containing all the data blocks
         """
         valid = False
+        attempts = 0
+        last_error = None
         while not valid:
+            attempts += 1
+            limit = getattr(self, 'max_sampling_attempts', None)
+            if limit is not None and attempts > limit:
+                raise RuntimeError('training pair sampling exhausted; check images/crops') from last_error
             # Select a dataset
             dataset = random.choices(self.datasets, self.p_datasets)[0]
 
@@ -131,7 +137,11 @@ class TrackingSampler(torch.utils.data.Dataset):
 
                 if self.frame_sample_mode == 'causal':
                     # Sample test and train frames in a causal manner, i.e. search_frame_ids > template_frame_ids
+                    frame_attempts = 0
                     while search_frame_ids is None:
+                        frame_attempts += 1
+                        if limit is not None and frame_attempts > limit:
+                            raise RuntimeError('causal frame sampling exhausted')
                         base_frame_id = self._sample_visible_ids(visible, num_ids=1, min_id=self.num_template_frames - 1,
                                                                  max_id=len(visible) - self.num_search_frames)
                         prev_frame_ids = self._sample_visible_ids(visible, num_ids=self.num_template_frames - 1,
@@ -185,7 +195,8 @@ class TrackingSampler(torch.utils.data.Dataset):
 
                 # check whether data is valid
                 valid = data['valid']
-            except:
+            except Exception as error:
+                last_error = error
                 valid = False
 
         return data
@@ -342,7 +353,12 @@ class TrackingSampler(torch.utils.data.Dataset):
 
         # Sample a sequence with enough visible frames
         enough_visible_frames = False
+        attempts = 0
         while not enough_visible_frames:
+            attempts += 1
+            limit = getattr(self, 'max_sampling_attempts', None)
+            if limit is not None and attempts > limit:
+                raise RuntimeError('no eligible visible sequence in ' + dataset.get_name())
             # Sample a sequence
             seq_id = random.randint(0, dataset.get_num_sequences() - 1)
 

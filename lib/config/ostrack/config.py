@@ -234,6 +234,8 @@ def update_config_from_file(filename, base_cfg=None):
         target = base_cfg if base_cfg is not None else cfg
         # Opt-in schema: unconditional defaults would invalidate the hashes
         # stored in already-trained Rfreeze/Rdisc checkpoint contracts.
+        if 'MODULE1_ADAPTER' in exp_config.get('MODEL', {}):
+            target.MODEL.MODULE1_ADAPTER = edict(ENABLED=False, WIDTH=128, MODE="frozen")
         if any('RESPONSE_RESIDUAL' in exp_config.get(section, {}) for section in ('MODEL', 'TRAIN')):
             target.MODEL.RESPONSE_RESIDUAL = edict(ENABLED=False, PROJECTION_DIM=32,
                 HIDDEN_DIM=64, MAX_DELTA_LOGIT=2.0)

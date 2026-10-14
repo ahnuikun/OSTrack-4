@@ -51,7 +51,10 @@ class OSTrack(BaseTracker):
         super(OSTrack, self).__init__(params)
         network = build_ostrack(params.cfg, training=False)
         checkpoint = torch.load(self.params.checkpoint, map_location='cpu', weights_only=False)
-        if params.cfg.TRAIN.VDRM_EXPERIMENT_ARM in ('rfreeze', 'rdisc'):
+        if params.cfg.TRAIN.VDRM_EXPERIMENT_ARM in ('module1', 'module1_scratch'):
+            from lib.train.module1_formal import validate_checkpoint
+            validate_checkpoint(checkpoint, params.cfg, expected_epoch=params.cfg.TEST.EPOCH)
+        elif params.cfg.TRAIN.VDRM_EXPERIMENT_ARM in ('rfreeze', 'rdisc'):
             from lib.train.frozen_vdrm import validate_frozen_config, validate_frozen_checkpoint
             validate_frozen_config(params.cfg)
             validate_frozen_checkpoint(network, checkpoint, cfg=params.cfg,

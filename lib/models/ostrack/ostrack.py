@@ -44,7 +44,11 @@ class OSTrack(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        if self.frozen_response:
+        if getattr(self, 'frozen_module1', False):
+            self.backbone.eval()
+            self.box_head.eval()
+            self.backbone.module1_adapter.train(mode)
+        elif self.frozen_response:
             self.backbone.eval()
             self.box_head.eval()
         elif self.frozen_visual:
@@ -279,6 +283,19 @@ def build_ostrack(cfg, training=True):
         if cfg.TRAIN.VDRM_EXPERIMENT_ARM not in ('rresp', 'rqual'):
             raise ValueError('response residual requires a named Rresp/Rqual arm')
         model.enable_response_residual(hidden_dim, response_cfg)
+
+    adapter_cfg = getattr(cfg.MODEL, 'MODULE1_ADAPTER', None)
+    if adapter_cfg is not None and adapter_cfg.ENABLED:
+        from lib.models.layers.module1_adapter import ResidualAdapter
+        from lib.train.module1_formal import validate_config
+        validate_config(cfg)
+        backbone.module1_adapter = ResidualAdapter(hidden_dim, adapter_cfg.WIDTH)
+        backbone.module1_adapter_disabled = False
+        model.frozen_module1 = adapter_cfg.MODE == 'frozen'
+        if model.frozen_module1:
+            for name, parameter in model.named_parameters():
+                parameter.requires_grad_(name.startswith('backbone.module1_adapter.'))
+        model.train(model.training)
 
     if 'OSTrack' in cfg.MODEL.PRETRAIN_FILE and training:
         checkpoint = torch.load(cfg.MODEL.PRETRAIN_FILE, map_location="cpu", weights_only=False)

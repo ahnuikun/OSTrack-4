@@ -5,10 +5,8 @@ Existing Rdisc q, route, alpha, backbone and heads remain frozen.
 """
 
 from contextlib import contextmanager
-import math
 
 import torch
-from torch import nn
 import torch.nn.functional as F
 
 from lib.utils.box_ops import box_cxcywh_to_xyxy,box_xywh_to_xyxy,giou_loss
@@ -16,55 +14,7 @@ from lib.utils.box_ops import box_cxcywh_to_xyxy,box_xywh_to_xyxy,giou_loss
 ARMS=('prototype','full')
 
 
-def insertion_features(module,tokens,kwargs,output):
-    start=int(kwargs['template_length'])
-    template,search=tokens[:,:start],tokens[:,start:]
-    masks,valid=module._build_part_masks(kwargs['template_bbox'],start)
-    masks=masks.to(template)
-    prototypes=torch.einsum('bkl,blc->bkc',masks,template)/masks.sum(-1,keepdim=True).clamp_min(1)
-    prototypes=prototypes*valid[...,None]
-    diag=output[1]
-    mixture=torch.einsum('bkn,bkc->bnc',diag['part_route_gate'],prototypes*diag['part_reliability'][...,None])
-    mixture=mixture/valid.sum(-1).clamp_min(1)[:,None,None]
-    return search,prototypes,valid,mixture,output[0][:,start:]-search
-
-
-class ResidualAdapter(nn.Module):
-    """Bounded correction with a SHARED output subspace of at most ``width``.
-
-    ``full`` only disables projection onto the four template prototypes. It
-    does not mean unrestricted 768-dimensional output: value(h) lies in the
-    column space of value.weight, shared by every token and training frame.
-    Keep width=32 for exact historical replay; capacity fixes must opt in.
-    """
-    def __init__(self,dimension=768,width=32,space='full'):
-        super().__init__()
-        if space not in ARMS:raise ValueError('unknown residual space')
-        self.space=space
-        self.search=nn.Linear(dimension,width,bias=False)
-        self.template=nn.Linear(dimension,width,bias=False)
-        self.value=nn.Linear(width,dimension,bias=False)
-        nn.init.zeros_(self.value.weight)
-
-    def forward(self,search,prototypes,valid,mixture,original):
-        if search.shape[0]!=1:raise ValueError('pilot uses batch size one')
-        width=search.shape[-1]
-        h=F.gelu(self.search(F.layer_norm(search,(width,)))+self.template(F.layer_norm(mixture,(width,))))
-        correction=self.value(h)
-        if self.space=='prototype':
-            p=prototypes[0,valid[0]].detach().double()
-            if len(p):
-                _,s,vh=torch.linalg.svd(p,full_matrices=False)
-                rank=int((s>max(float(s[0])*1e-6,1e-12)).sum())
-                basis=vh[:rank].to(correction)
-                correction=(correction@basis.T)@basis
-            else:correction=correction*0
-        reference=original.norm()
-        correction=correction*(reference/math.sqrt(original.numel()))
-        combined=original+correction
-        # One original-update norm for BOTH arms, including the original path.
-        scale=(reference/combined.norm().clamp_min(1e-12)).clamp(max=1.)
-        return combined*scale
+from lib.models.layers.module1_adapter import ResidualAdapter, insertion_features
 
 
 @contextmanager
